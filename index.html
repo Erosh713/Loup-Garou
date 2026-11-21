@@ -61,9 +61,15 @@ const ROLES={
   chasseur:{n:"Chasseur",e:"🏹",d:"Quand tu meurs, tu élimines immédiatement un joueur de ton choix."},
   cupidon:{n:"Cupidon",e:"💘",d:"La première nuit, tu désignes deux amoureux. Si l'un meurt, l'autre meurt de chagrin."},
   petitefille:{n:"Petite Fille",e:"👧",d:"La nuit, tu peux entrouvrir les yeux pour espionner les loups. Ne te fais pas prendre !"},
+  salvateur:{n:"Salvateur",e:"🛡️",d:"Chaque nuit, tu protèges un joueur de l'attaque des loups. Jamais le même deux nuits de suite."},
+  ancien:{n:"Ancien",e:"🧓",d:"Tu survis à la première attaque des loups. Mais si le village t'élimine, tous les villageois perdent leurs pouvoirs."},
+  idiot:{n:"Idiot du village",e:"🤪",d:"Si le village vote contre toi, ton rôle est révélé et tu restes en vie, mais tu ne votes plus."},
+  corbeau:{n:"Corbeau",e:"🐦",d:"Chaque nuit, tu peux désigner un joueur : il aura 2 voix contre lui au prochain vote."},
   villageois:{n:"Villageois",e:"🧑‍🌾",d:"Pas de pouvoir : trouve les loups et vote bien."}
 };
-const ORDER=["loup","voyante","sorciere","chasseur","cupidon","petitefille","villageois"];
+const ORDER=["loup","voyante","sorciere","chasseur","cupidon","petitefille","salvateur","ancien","idiot","corbeau","villageois"];
+const fmt=ms=>{const s=Math.max(0,Math.ceil(ms/1000));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")};
+const newTimer=d=>({dur:d||180000,left:d||180000,running:false,endsAt:0});
 const PREFIX="lgthiercelieux-v1-";
 const app=document.getElementById("app");
 const $=s=>document.querySelector(s);
@@ -82,7 +88,7 @@ function suggest(n){
   if(n<1)return c;
   c.loup=n<=5?1:n<=11?2:n<=17?3:4;
   let left=n-c.loup;
-  for(const [k,min] of [["voyante",4],["sorciere",6],["chasseur",7],["cupidon",8],["petitefille",10]]){
+  for(const [k,min] of [["voyante",4],["sorciere",6],["chasseur",7],["cupidon",8],["petitefille",10],["salvateur",12],["corbeau",14],["ancien",16]]){
     if(n>=min&&left>0){c[k]=1;left--}
   }
   c.villageois=Math.max(0,left);
@@ -133,6 +139,7 @@ function startHost(restore){
   P=null;
   H=restore||{code:newCode(),phase:"lobby",players:[],comp:suggest(0),custom:false,night:0};
   H.showQR=H.phase==="lobby";
+  H.timer=H.timer||newTimer();H.vote=H.vote||null;
   conns={};pending={};hostErr="";hostNote="";
   history.replaceState(null,"",baseUrl());
   openHostPeer();
@@ -173,14 +180,35 @@ function onHostMsg(c,m){
     conns[m.id]=c;
     changed();
   }
+  if(m.t==="vote"&&conns[m.id]===c)castVote(m.id,m.target);
 }
 function online(id){const c=conns[id];return !!(c&&c.open)}
+const inPlay=()=>H.players.filter(p=>p.role&&p.alive);
+const canVote=p=>p.role&&p.alive&&!p.revealed;
+function castVote(voterId,target){
+  const v=H.vote,p=H.players.find(x=>x.id===voterId);
+  if(!v||!v.open||!p||!canVote(p)||typeof target!=="string")return;
+  if(!inPlay().some(x=>x.name===target)||target===p.name)return;
+  v.votes[voterId]=target;changed();
+}
+function tally(){
+  const v=H.vote,t={};
+  Object.values(v.votes).forEach(n=>t[n]=(t[n]||0)+1);
+  if(v.crow&&inPlay().some(x=>x.name===v.crow))t[v.crow]=(t[v.crow]||0)+2;
+  return Object.entries(t).map(([name,n])=>({name,n,crow:name===v.crow})).sort((a,b)=>b.n-a.n);
+}
+function timerLeft(){const t=H.timer;return t.running?Math.max(0,t.endsAt-Date.now()):t.left}
 function stateFor(p){
   const inGame=H.phase==="game"&&p.role;
+  const v=H.vote;
   return {t:"state",phase:H.phase,count:H.players.length,name:p.name,
-    role:inGame?p.role:null,alive:p.alive,
+    role:inGame?p.role:null,alive:p.alive,revealed:!!p.revealed,
     lover:inGame&&p.lover?H.players.filter(x=>x.lover&&x.id!==p.id).map(x=>x.name):[],
-    mates:inGame&&p.role==="loup"?H.players.filter(x=>x.role==="loup"&&x.id!==p.id).map(x=>x.name):[]};
+    mates:inGame&&p.role==="loup"?H.players.filter(x=>x.role==="loup"&&x.id!==p.id).map(x=>x.name):[],
+    timer:H.phase==="game"?{running:H.timer.running,remaining:timerLeft(),dur:H.timer.dur}:null,
+    vote:inGame&&v?{open:v.open,options:v.open?inPlay().filter(x=>x.id!==p.id).map(x=>x.name):[],
+      mine:v.votes[p.id]||null,canVote:canVote(p),count:Object.keys(v.votes).length,
+      total:H.players.filter(canVote).length,results:v.open?null:tally()}:null};
 }
 function sendTo(id,msg){const c=conns[id];if(c&&c.open){try{c.send(msg)}catch(e){}}}
 function broadcast(){H.players.forEach(p=>sendTo(p.id,stateFor(p)))}
@@ -242,7 +270,7 @@ function renderHost(){
       <button class="sm danger" data-a="kick" data-id="${esc(p.id)}" aria-label="Retirer">✕</button></li>`).join("")}</ul></div>`;
     h+=`<h2>Joueurs — ${al.length} en vie (${w} loup${w>1?"s":""})</h2><div class="card"><ul class="list">${H.players.filter(p=>p.role).map(p=>`
       <li class="${p.alive?"":"dead"}">${dot(p)}
-      <span class="grow"><b>${esc(p.name)}</b> · ${ROLES[p.role].e} ${ROLES[p.role].n}</span>
+      <span class="grow"><b>${esc(p.name)}</b> · ${ROLES[p.role].e} ${ROLES[p.role].n}${p.revealed?" (révélé)":""}</span>
       <button class="sm" data-a="peek" data-id="${esc(p.id)}" aria-label="Voir son écran">👁</button>
       <button class="sm" data-a="love" data-id="${esc(p.id)}" aria-label="Amoureux">${p.lover?"💘":"♡"}</button>
       <button class="sm" data-a="life" data-id="${esc(p.id)}">${p.alive?"☠️":"↩︎"}</button></li>`).join("")}</ul>
@@ -252,6 +280,8 @@ function renderHost(){
       ${H.night?`<ol class="steps">${nightSteps().map(s=>`<li>${s}</li>`).join("")}</ol>`:`<p class="mut" style="margin-top:0">Quand tout le monde a vu son rôle, lance la première nuit : je t'affiche l'ordre des réveils.</p>`}
       <button class="pri full" style="margin-top:10px" data-a="night">🌙 ${H.night?"Nuit suivante":"Commencer la nuit 1"}</button>
     </div>
+    ${timerCard()}
+    ${voteCard()}
     <div class="err">${esc(hostErr)}</div>
     <div class="btns"><button data-a="again">Rejouer (mêmes joueurs)</button><button class="danger" data-a="end">Terminer</button></div>`;
   }
@@ -269,10 +299,42 @@ function nightSteps(){
     s.push("Les amoureux se réveillent, se reconnaissent, puis se rendorment.");
   }
   if(has("voyante"))s.push("🔮 La Voyante se réveille et désigne un joueur : montre-lui son rôle. Elle se rendort.");
+  if(has("salvateur"))s.push("🛡️ Le Salvateur se réveille et désigne un joueur à protéger cette nuit (pas le même que la nuit précédente). Il se rendort.");
   if(has("loup"))s.push("🐺 Les Loups-Garous se réveillent et choisissent ensemble une victime."+(has("petitefille")?" La Petite Fille peut espionner.":"")+" Ils se rendorment.");
   if(has("sorciere"))s.push("🧪 La Sorcière se réveille. Montre-lui la victime : veut-elle la sauver, ou tuer quelqu'un ? Elle se rendort.");
-  s.push("☀️ Le village se réveille. Annonce les morts (☠️), puis le village débat et vote.");
+  if(has("corbeau"))s.push("🐦 Le Corbeau se réveille et peut désigner un joueur : retiens-le, il aura 2 voix contre lui au vote. Il se rendort.");
+  s.push("☀️ Le village se réveille. Annonce les morts (☠️), lance le minuteur du débat, puis le vote.");
   return s;
+}
+function timerCard(){
+  const t=H.timer,left=timerLeft();
+  return `<h2>⏱ Débat du jour</h2><div class="card" style="text-align:center">
+    <div class="code" data-end="${t.running?t.endsAt:""}" data-left="${left}">${fmt(left)}</div>
+    ${t.running?"":`<div class="btns">${[1,2,3,5].map(m=>`<button class="sm" data-a="tset" data-m="${m}" ${t.dur===m*60000?'style="border-color:var(--acc)"':""}>${m} min</button>`).join("")}</div>`}
+    <div class="btns">${t.running?`<button class="pri" data-a="tpause">⏸ Pause</button>`:`<button class="pri" data-a="tstart">▶ ${left<t.dur&&left>0?"Reprendre":"Démarrer"}</button>`}<button data-a="treset">↺ Remettre à zéro</button></div>
+    <div class="mut" style="margin-top:8px">Le minuteur s'affiche aussi sur le téléphone des joueurs.</div></div>`;
+}
+function voteCard(){
+  const v=H.vote,alive=inPlay(),voters=H.players.filter(canVote);
+  if(!v){
+    const crow=H.players.some(p=>p.role==="corbeau");
+    return `<h2>🗳 Vote du village</h2><div class="card">
+      <p class="mut" style="margin-top:0">Chaque joueur vivant vote en secret sur son téléphone. Personne, même pas toi, ne voit qui a voté pour qui.</p>
+      ${crow?`<label class="mut">Joueur désigné par le Corbeau (+2 voix)</label><select id="crow" style="margin:6px 0 10px"><option value="">Personne</option>${alive.map(p=>`<option>${esc(p.name)}</option>`).join("")}</select>`:""}
+      <button class="pri full" data-a="vopen">Lancer le vote</button></div>`;
+  }
+  if(v.open){
+    const n=Object.keys(v.votes).length,bots=voters.some(p=>p.bot&&!v.votes[p.id]);
+    return `<h2>🗳 Vote en cours</h2><div class="card">
+      <div class="code" style="font-size:32px;letter-spacing:2px">${n} / ${voters.length}</div>
+      <p class="mut" style="text-align:center;margin-top:0">joueurs ont voté${v.crow?` · le Corbeau a désigné ${esc(v.crow)} (+2)`:""}</p>
+      <div class="btns">${bots?`<button class="sm" data-a="vbots">🤖 Faire voter les tests</button>`:""}<button class="pri" data-a="vclose">Clore le vote</button><button class="sm danger" data-a="vcancel">Annuler</button></div></div>`;
+  }
+  const r=tally(),top=r.length?r[0].n:0,leaders=r.filter(x=>x.n===top);
+  return `<h2>🗳 Résultat du vote</h2><div class="card">
+    ${r.length?`<ul class="list">${r.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}
+    ${leaders.length>1?`<div class="note">Égalité entre ${leaders.map(x=>esc(x.name)).join(" et ")}. Relance un vote ou tranche selon vos règles.</div>`:""}
+    <div class="btns">${leaders.length===1?`<button class="pri" data-a="vkill" data-name="${esc(leaders[0].name)}">☠️ Éliminer ${esc(leaders[0].name)}</button>`:""}<button data-a="vagain">Nouveau vote</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
 }
 actions.share=()=>{
   const url=joinUrl(H.code);
@@ -295,33 +357,81 @@ actions.deal=()=>{
   if(total(c)!==n){hostErr="La composition doit avoir exactement "+n+" rôles (actuellement "+total(c)+").";return renderHost()}
   if(!c.loup){hostErr="Il faut au moins un Loup-Garou.";return renderHost()}
   const deck=shuffle(ORDER.flatMap(k=>Array(c[k]).fill(k)));
-  H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false});
+  H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false;p.revealed=false});
+  H.vote=null;H.timer=newTimer(H.timer.dur);
   H.phase="game";H.night=0;H.showQR=false;hostNote="";changed();
 };
 actions.give=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
-  p.role=pending[p.id]||"villageois";p.alive=true;p.lover=false;delete pending[p.id];changed();
+  p.role=pending[p.id]||"villageois";p.alive=true;p.lover=false;p.revealed=false;delete pending[p.id];changed();
 };
 actions.love=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
   if(!p.lover&&H.players.filter(x=>x.lover).length>=2){hostErr="Il y a déjà deux amoureux. Retire d'abord un cœur.";return renderHost()}
   p.lover=!p.lover;hostNote="";changed();
 };
+function kill(p,byVote){
+  const notes=[];
+  const one=x=>{
+    x.alive=false;
+    if(x.role==="chasseur")notes.push("🏹 "+x.name+" était Chasseur : il élimine immédiatement un joueur.");
+    if(x.role==="ancien")notes.push(byVote?"🧓 Le village a éliminé l'Ancien : les villageois perdent leurs pouvoirs.":"🧓 Si c'est la première attaque des loups contre l'Ancien, il survit : appuie sur ↩︎.");
+  };
+  one(p);
+  if(p.lover){const o=H.players.find(x=>x.lover&&x.id!==p.id&&x.alive);if(o){one(o);notes.splice(0,0,"💘 "+o.name+" meurt de chagrin.")}}
+  return notes.join(" ");
+}
 actions.life=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
-  p.alive=!p.alive;hostNote="";
-  if(!p.alive){
-    const notes=[];
-    if(p.role==="chasseur")notes.push("🏹 "+p.name+" était Chasseur : il élimine immédiatement un joueur.");
-    if(p.lover){const o=H.players.find(x=>x.lover&&x.id!==p.id&&x.alive);if(o){o.alive=false;notes.push("💘 "+o.name+" meurt de chagrin.");if(o.role==="chasseur")notes.push("🏹 "+o.name+" était Chasseur : il élimine immédiatement un joueur.")}}
-    hostNote=notes.join(" ");
-  }
+  hostNote="";
+  if(p.alive)hostNote=kill(p,false);else p.alive=true;
   changed();
 };
+actions.tset=d=>{H.timer=newTimer(+d.m*60000);changed()};
+actions.tstart=()=>{const t=H.timer;if(t.left<=0)t.left=t.dur;t.running=true;t.endsAt=Date.now()+t.left;changed()};
+actions.tpause=()=>{const t=H.timer;t.left=timerLeft();t.running=false;changed()};
+actions.treset=()=>{H.timer=newTimer(H.timer.dur);changed()};
+actions.vopen=()=>{
+  const c=$("#crow");
+  if(H.players.filter(canVote).length<2){hostErr="Il faut au moins 2 joueurs qui peuvent voter.";return renderHost()}
+  H.vote={open:true,votes:{},crow:c&&c.value?c.value:null};hostNote="";changed();
+};
+actions.vbots=()=>{
+  H.players.filter(p=>p.bot&&canVote(p)&&!H.vote.votes[p.id]).forEach(p=>{
+    const opts=inPlay().filter(x=>x.id!==p.id);
+    if(opts.length)H.vote.votes[p.id]=opts[Math.floor(Math.random()*opts.length)].name;
+  });changed();
+};
+actions.vclose=()=>{H.vote.open=false;changed()};
+actions.vcancel=()=>{H.vote=null;changed()};
+actions.vagain=()=>{H.vote={open:true,votes:{},crow:H.vote.crow};changed()};
+actions.vdone=()=>{H.vote=null;changed()};
+actions.vkill=d=>{
+  const p=H.players.find(x=>x.name===d.name&&x.alive);if(!p)return;
+  if(p.role==="idiot"&&!p.revealed){p.revealed=true;hostNote="🤪 "+p.name+" était l'Idiot du village : il reste en vie mais ne vote plus.";}
+  else hostNote="☠️ Le village a éliminé "+p.name+". "+kill(p,true);
+  H.vote=null;changed();
+};
+actions.vote=d=>{
+  if(P&&P.conn&&P.conn.open){P.conn.send({t:"vote",id:P.id,target:d.name});return}
+  if(H&&H.preview)castVote(H.preview,d.name);
+};
+setInterval(()=>{
+  document.querySelectorAll("[data-end]").forEach(el=>{
+    const end=+el.dataset.end;if(!end)return;
+    const left=end-Date.now();el.textContent=fmt(left);
+    el.classList.toggle("bad",left<=10000);
+  });
+  if(H&&H.timer.running&&timerLeft()<=0){
+    H.timer.running=false;H.timer.left=0;hostNote="⏱ Le temps du débat est écoulé : place au vote !";beep();changed();
+  }
+},250);
+function beep(){try{const a=new (window.AudioContext||window.webkitAudioContext)(),o=a.createOscillator(),g=a.createGain();o.frequency.value=660;o.connect(g);g.connect(a.destination);g.gain.setValueAtTime(.25,a.currentTime);g.gain.exponentialRampToValueAtTime(.001,a.currentTime+1.2);o.start();o.stop(a.currentTime+1.2)}catch(e){}if(navigator.vibrate)try{navigator.vibrate([300,150,300])}catch(e){}}
 actions.night=()=>{H.night++;hostNote="";changed();window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"})};
 actions.again=()=>{
   if(!confirm("Relancer une partie avec les mêmes joueurs ?"))return;
-  H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false});
+  H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false;p.revealed=false});
+  H.vote=null;H.timer=newTimer(H.timer.dur);
   H.phase="lobby";H.night=0;H.showQR=true;hostNote="";changed();
 };
 actions.end=()=>{
@@ -393,7 +503,7 @@ function pConnect(){
   c.on("open",()=>{clearTimeout(to);if(!P||P.conn!==c)return;P.status="";c.send({t:"hello",id:P.id,name:P.name});renderPlayer()});
   c.on("data",m=>{
     if(!P||!m)return;
-    if(m.t==="state"){P.state=m;P.name=m.name;renderPlayer()}
+    if(m.t==="state"){m._recv=Date.now();P.state=m;P.name=m.name;renderPlayer()}
     else if(m.t==="kicked"){P.over="Le meneur t'a retiré de la partie.";killPeer();renderPlayer()}
     else if(m.t==="ended"){P.over="La partie est terminée. Merci d'avoir joué !";killPeer();renderPlayer()}
   });
@@ -401,8 +511,24 @@ function pConnect(){
 }
 function playerBody(s){
   if(!s.role)return `<div class="card"><p style="margin-top:0">Tu es dans la partie 👋</p><p class="mut" style="margin-bottom:0">${s.phase==="lobby"?"Attends que le meneur distribue les rôles.":"La partie a déjà commencé : le meneur va te donner un rôle."} ${s.count} joueur${s.count>1?"s":""} dans la partie.</p></div>`;
-  const r=ROLES[s.role];
+  const r=ROLES[s.role],t=s.timer,v=s.vote;
+  let day="";
+  if(t&&(t.running||t.remaining<t.dur)){
+    const end=t.running?(s._recv||Date.now())+t.remaining:"";
+    day+=`<div class="card" style="text-align:center"><div class="mut">⏱ Débat du jour${t.running?"":t.remaining>0?" (en pause)":""}</div>
+      <div class="code ${!t.running&&t.remaining<=0?"bad":""}" data-end="${end}">${t.remaining>0?fmt(t.remaining):"Temps écoulé"}</div></div>`;
+  }
+  if(v&&v.open){
+    if(v.canVote)day+=`<div class="card"><p style="margin-top:0"><b>🗳 Le village vote</b><br><span class="mut">Ton vote est anonyme. Tu peux changer d'avis jusqu'à la fin du vote.</span></p>
+      <ul class="list">${v.options.map(n=>`<li><button class="full ${v.mine===n?"pri":""}" data-a="vote" data-name="${esc(n)}">${v.mine===n?"✓ ":""}${esc(n)}</button></li>`).join("")}</ul>
+      <p class="mut" style="margin-bottom:0">${v.mine?"Vote enregistré. ":""}${v.count} / ${v.total} ont voté.</p></div>`;
+    else day+=`<div class="card"><b>🗳 Le village vote</b><p class="mut" style="margin-bottom:0">${s.alive?"Ton rôle a été révélé : tu ne votes plus.":"Les morts ne votent pas."} ${v.count} / ${v.total} ont voté.</p></div>`;
+  } else if(v&&v.results){
+    day+=`<div class="card"><b>🗳 Résultat du vote</b>${v.results.length?`<ul class="list">${v.results.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}</div>`;
+  }
   return `${s.alive?"":`<div class="note">☠️ Tu es mort. Garde le silence jusqu'à la fin de la partie !</div>`}
+    ${s.revealed?`<div class="note">🤪 Ton rôle d'Idiot du village a été révélé : tu restes en vie mais tu ne votes plus.</div>`:""}
+    ${day}
     <div class="card reveal" id="rv">
       <div class="h"><div class="big">🂠</div><p style="font-size:18px;margin:10px 0 4px">Maintiens appuyé pour voir ton rôle</p><p class="mut" style="margin:0">Cache bien ton écran.</p></div>
       <div class="s"><div class="big">${r.e}</div><div class="rname">${r.n}</div><p class="mut" style="margin:0 8px">${r.d}</p>
