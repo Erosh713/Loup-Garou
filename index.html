@@ -78,6 +78,11 @@ const iline=(k,txt)=>infoOpen===k?`<li class="info">${txt}</li>`:"";
 const fmt=ms=>{const s=Math.max(0,Math.ceil(ms/1000));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")};
 const newTimer=d=>({dur:d||180000,left:d||180000,running:false,endsAt:0});
 const PREFIX="lgthiercelieux-v1-";
+const PEER_OPTS={config:{iceServers:[
+  {urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},
+  {urls:"stun:stun.cloudflare.com:3478"},
+  {urls:["turn:eu-0.turn.peerjs.com:3478","turn:us-0.turn.peerjs.com:3478"],username:"peerjs",credential:"peerjsp"}
+]}};
 const app=document.getElementById("app");
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -157,7 +162,7 @@ function saveHost(){if(!H)return;const {showQR,preview,...rest}=H;store("lg-host
 function openHostPeer(){
   killPeer();
   hostStatus="Connexion au réseau…";
-  const p=new Peer(PREFIX+H.code);peer=p;
+  const p=new Peer(PREFIX+H.code,PEER_OPTS);peer=p;
   p.on("open",()=>{if(peer!==p)return;hostStatus="";saveHost();renderHost()});
   p.on("connection",c=>{
     c.on("data",m=>onHostMsg(c,m));
@@ -466,6 +471,7 @@ actions.vote=d=>pSend({t:"vote",target:d.name});
 actions.tiebreak=d=>pSend({t:"tiebreak",name:d.name});
 actions.succ=d=>pSend({t:"succ",name:d.name});
 setInterval(()=>{
+  document.querySelectorAll("[data-since]").forEach(el=>{const t=+el.dataset.since;el.textContent=t?"("+Math.floor((Date.now()-t)/1000)+" s)":""});
   document.querySelectorAll("[data-end]").forEach(el=>{
     const end=+el.dataset.end;if(!end)return;
     const left=end-Date.now();el.textContent=fmt(left);
@@ -525,8 +531,8 @@ function startPlayer(code,name){
   const id=saved.id||rid();
   store("lg-player",{id,name,code});
   history.replaceState(null,"",baseUrl()+"?p="+code);
-  P={code,name,id,state:null,status:"Connexion…",conn:null,over:""};
-  const p=new Peer();peer=p;
+  P={code,name,id,state:null,status:"Étape 1/2 : connexion au serveur…",conn:null,over:"",t0:Date.now()};
+  const p=new Peer(PEER_OPTS);peer=p;
   p.on("open",()=>{if(peer===p)pConnect()});
   p.on("disconnected",()=>{if(peer===p)schedule(()=>{try{p.reconnect()}catch(e){}},1500)});
   p.on("error",err=>{
@@ -547,16 +553,17 @@ function pRetry(){
 }
 function pConnect(){
   if(!P)return;
-  const c=peer.connect(PREFIX+P.code,{reliable:true});P.conn=c;
-  const to=setTimeout(()=>{if(P&&P.conn===c&&!c.open){try{c.close()}catch(e){}schedule(pRetry,200)}},8000);
-  c.on("open",()=>{clearTimeout(to);if(!P||P.conn!==c)return;P.status="";c.send({t:"hello",id:P.id,name:P.name});renderPlayer()});
+  if(!P.state){P.status="Étape 2/2 : connexion au téléphone du meneur…";renderPlayer()}
+  const c=peer.connect(PREFIX+P.code,{reliable:true,serialization:"json"});P.conn=c;
+  const to=setTimeout(()=>{if(P&&P.conn===c&&!c.open){try{c.close()}catch(e){}schedule(pRetry,200)}},25000);
+  c.on("open",()=>{clearTimeout(to);if(!P||P.conn!==c)return;P.status="";P.t0=0;c.send({t:"hello",id:P.id,name:P.name});renderPlayer()});
   c.on("data",m=>{
     if(!P||!m)return;
     if(m.t==="state"){m._recv=Date.now();P.state=m;P.name=m.name;renderPlayer()}
     else if(m.t==="kicked"){P.over="Le meneur t'a retiré de la partie.";killPeer();renderPlayer()}
     else if(m.t==="ended"){P.over="La partie est terminée. Merci d'avoir joué !";killPeer();renderPlayer()}
   });
-  c.on("close",()=>{if(P&&P.conn===c&&!P.over){P.status="Connexion perdue, reconnexion…";renderPlayer();schedule(pRetry,2000)}});
+  c.on("close",()=>{if(P&&P.conn===c&&!P.over){P.status="Connexion perdue, reconnexion…";P.t0=Date.now();renderPlayer();schedule(pRetry,2000)}});
 }
 function playerBody(s){
   if(!s.role)return `<div class="card"><p style="margin-top:0">Tu es dans la partie 👋</p><p class="mut" style="margin-bottom:0">${s.phase==="lobby"?"Attends que le meneur distribue les rôles.":"La partie a déjà commencé : le meneur va te donner un rôle."} ${s.count} joueur${s.count>1?"s":""} dans la partie.</p></div>`;
@@ -606,7 +613,7 @@ function renderPlayer(){
   if(!P)return;
   const s=P.state;let body="";
   if(P.over)body=`<div class="card">${esc(P.over)}</div>`;
-  else if(!s)body=`<div class="card mut">${esc(P.status||"Connexion…")}</div>`;
+  else if(!s)body=`<div class="card mut">${esc(P.status||"Connexion…")} <span data-since="${P.t0||""}"></span><br><span style="font-size:13px">Sur réseau mobile, la première connexion peut prendre jusqu'à 20 secondes.</span></div>`;
   else body=playerBody(s);
   app.innerHTML=`<h1>🐺 ${esc(P.name)}</h1><p class="mut">Partie ${esc(P.code)}</p>
   ${P.status&&s&&!P.over?`<div class="status">${esc(P.status)}</div>`:""}
