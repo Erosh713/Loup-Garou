@@ -138,7 +138,7 @@ function startHost(restore){
   openHostPeer();
   renderHost();
 }
-function saveHost(){if(!H)return;const {showQR,...rest}=H;store("lg-host",rest)}
+function saveHost(){if(!H)return;const {showQR,preview,...rest}=H;store("lg-host",rest)}
 function openHostPeer(){
   killPeer();
   hostStatus="Connexion au réseau…";
@@ -202,13 +202,20 @@ function renderHost(){
     ${H.showQR?`<div id="qr"></div>`:""}
     <div class="btns"><button class="sm" data-a="share">Partager le lien</button><button class="sm" data-a="qr">${H.showQR?"Masquer":"Afficher"} le QR code</button></div>
   </div>`;
+  const pv=H.preview&&H.players.find(p=>p.id===H.preview);
+  if(pv)h+=`<div class="card" style="border-color:var(--acc)">
+    <div style="display:flex;align-items:center;gap:10px"><b class="grow">👁 Écran de ${esc(pv.name)}</b><button class="sm" data-a="unpeek">Fermer</button></div>
+    <p class="mut" style="margin:4px 0 0">Aperçu de ce que voit ce joueur sur son téléphone.</p>
+    ${playerBody(stateFor(pv))}</div>`;
 
   if(H.phase==="lobby"){
     const c=H.comp,t=total(c);
     h+=`<h2>Joueurs (${n})</h2><div class="card">${n?`<ul class="list">${H.players.map(p=>`
-      <li><span class="dot ${online(p.id)?"on":""}"></span><span class="grow">${esc(p.name)}</span>
+      <li>${dot(p)}<span class="grow">${esc(p.name)}</span>
+      <button class="sm" data-a="peek" data-id="${esc(p.id)}" aria-label="Voir son écran">👁</button>
       <button class="sm danger" data-a="kick" data-id="${esc(p.id)}" aria-label="Retirer">✕</button></li>`).join("")}</ul>`
-      :`<p class="mut" style="margin:0">Les joueurs apparaissent ici dès qu'ils rejoignent avec le code ou le QR code.</p>`}</div>
+      :`<p class="mut" style="margin:0">Les joueurs apparaissent ici dès qu'ils rejoignent avec le code ou le QR code.</p>`}
+      <div class="btns"><button class="sm" data-a="bot">🤖 Ajouter un joueur test</button>${H.players.some(p=>p.bot)?`<button class="sm danger" data-a="nobots">Retirer les tests</button>`:""}</div></div>
     <h2>Composition</h2><div class="card"><ul class="list">${ORDER.map(k=>`
       <li><span style="font-size:22px">${ROLES[k].e}</span><span class="grow">${ROLES[k].n}</span>
       <button class="sm" data-a="dec" data-k="${k}" aria-label="Moins">−</button>
@@ -229,16 +236,18 @@ function renderHost(){
     if(verdict)h+=`<div class="note win">${verdict}</div>`;
     if(hostNote)h+=`<div class="note">${esc(hostNote)}</div>`;
     if(late.length)h+=`<h2>Nouveaux arrivants</h2><div class="card"><ul class="list">${late.map(p=>`
-      <li><span class="dot ${online(p.id)?"on":""}"></span><span class="grow">${esc(p.name)}</span>
+      <li>${dot(p)}<span class="grow">${esc(p.name)}</span>
       <select class="sm" data-pending="${esc(p.id)}">${ORDER.map(k=>`<option value="${k}" ${(pending[p.id]||"villageois")===k?"selected":""}>${ROLES[k].e} ${ROLES[k].n}</option>`).join("")}</select>
       <button class="sm" data-a="give" data-id="${esc(p.id)}">Donner</button>
       <button class="sm danger" data-a="kick" data-id="${esc(p.id)}" aria-label="Retirer">✕</button></li>`).join("")}</ul></div>`;
     h+=`<h2>Joueurs — ${al.length} en vie (${w} loup${w>1?"s":""})</h2><div class="card"><ul class="list">${H.players.filter(p=>p.role).map(p=>`
-      <li class="${p.alive?"":"dead"}"><span class="dot ${online(p.id)?"on":""}"></span>
+      <li class="${p.alive?"":"dead"}">${dot(p)}
       <span class="grow"><b>${esc(p.name)}</b> · ${ROLES[p.role].e} ${ROLES[p.role].n}</span>
+      <button class="sm" data-a="peek" data-id="${esc(p.id)}" aria-label="Voir son écran">👁</button>
       <button class="sm" data-a="love" data-id="${esc(p.id)}" aria-label="Amoureux">${p.lover?"💘":"♡"}</button>
       <button class="sm" data-a="life" data-id="${esc(p.id)}">${p.alive?"☠️":"↩︎"}</button></li>`).join("")}</ul>
-      <div class="mut" style="margin-top:8px">♡ marque les amoureux · ☠️ élimine un joueur · ↩︎ annule</div></div>
+      <div class="mut" style="margin-top:8px">👁 voir son écran · ♡ amoureux · ☠️ éliminer · ↩︎ annuler</div>
+      <div class="btns"><button class="sm" data-a="bot">🤖 Simuler un retardataire</button></div></div>
     <h2>${H.night?"Nuit "+H.night:"Guide du meneur"}</h2><div class="card">
       ${H.night?`<ol class="steps">${nightSteps().map(s=>`<li>${s}</li>`).join("")}</ol>`:`<p class="mut" style="margin-top:0">Quand tout le monde a vu son rôle, lance la première nuit : je t'affiche l'ordre des réveils.</p>`}
       <button class="pri full" style="margin-top:10px" data-a="night">🌙 ${H.night?"Nuit suivante":"Commencer la nuit 1"}</button>
@@ -248,6 +257,7 @@ function renderHost(){
   }
   h+=`<p style="margin-top:24px"><button class="sm" data-a="homeh">← Accueil</button></p>`;
   app.innerHTML=h;
+  attachReveal();
   hostErr="";
   if(H.showQR&&window.QRCode&&$("#qr")){try{new QRCode($("#qr"),{text:url,width:180,height:180})}catch(e){}}
 }
@@ -274,7 +284,7 @@ actions.inc=d=>{H.custom=true;H.comp[d.k]=(H.comp[d.k]||0)+1;changed()};
 actions.dec=d=>{H.custom=true;H.comp[d.k]=Math.max(0,(H.comp[d.k]||0)-1);changed()};
 actions.auto=()=>{H.custom=false;changed()};
 actions.kick=d=>{
-  const p=H.players.find(x=>x.id===d.id);if(!p||!confirm("Retirer "+p.name+" de la partie ?"))return;
+  const p=H.players.find(x=>x.id===d.id);if(!p||(!p.bot&&!confirm("Retirer "+p.name+" de la partie ?")))return;
   sendTo(p.id,{t:"kicked"});
   const c=conns[p.id];delete conns[p.id];setTimeout(()=>{try{c&&c.close()}catch(e){}},400);
   H.players=H.players.filter(x=>x.id!==p.id);changed();
@@ -321,6 +331,16 @@ actions.end=()=>{
   setTimeout(()=>{killPeer();home()},400);
 };
 actions.homeh=()=>{killPeer();home()};
+actions.bot=()=>{
+  let k=1;while(H.players.some(p=>p.name==="Test "+k))k++;
+  const p={id:"bot-"+rid(),name:"Test "+k,role:null,alive:true,lover:false,bot:true};
+  if(H.phase==="game")pending[p.id]="villageois";
+  H.players.push(p);changed();
+};
+actions.nobots=()=>{H.players=H.players.filter(p=>!p.bot);if(H.preview&&!H.players.some(p=>p.id===H.preview))H.preview=null;changed()};
+actions.peek=d=>{H.preview=d.id;renderHost();window.scrollTo({top:0,behavior:"smooth"})};
+actions.unpeek=()=>{H.preview=null;renderHost()};
+function dot(p){return p.bot?`<span title="Joueur test" style="flex:none">🤖</span>`:`<span class="dot ${online(p.id)?"on":""}"></span>`}
 
 /* ---------------- JOUEUR ---------------- */
 let P=null;
@@ -379,15 +399,10 @@ function pConnect(){
   });
   c.on("close",()=>{if(P&&P.conn===c&&!P.over){P.status="Connexion perdue, reconnexion…";renderPlayer();schedule(pRetry,2000)}});
 }
-function renderPlayer(){
-  if(!P)return;
-  const s=P.state;let body="";
-  if(P.over)body=`<div class="card">${esc(P.over)}</div>`;
-  else if(!s)body=`<div class="card mut">${esc(P.status||"Connexion…")}</div>`;
-  else if(!s.role)body=`<div class="card"><p style="margin-top:0">Tu es dans la partie 👋</p><p class="mut" style="margin-bottom:0">${s.phase==="lobby"?"Attends que le meneur distribue les rôles.":"La partie a déjà commencé : le meneur va te donner un rôle."} ${s.count} joueur${s.count>1?"s":""} dans la partie.</p></div>`;
-  else{
-    const r=ROLES[s.role];
-    body=`${s.alive?"":`<div class="note">☠️ Tu es mort. Garde le silence jusqu'à la fin de la partie !</div>`}
+function playerBody(s){
+  if(!s.role)return `<div class="card"><p style="margin-top:0">Tu es dans la partie 👋</p><p class="mut" style="margin-bottom:0">${s.phase==="lobby"?"Attends que le meneur distribue les rôles.":"La partie a déjà commencé : le meneur va te donner un rôle."} ${s.count} joueur${s.count>1?"s":""} dans la partie.</p></div>`;
+  const r=ROLES[s.role];
+  return `${s.alive?"":`<div class="note">☠️ Tu es mort. Garde le silence jusqu'à la fin de la partie !</div>`}
     <div class="card reveal" id="rv">
       <div class="h"><div class="big">🂠</div><p style="font-size:18px;margin:10px 0 4px">Maintiens appuyé pour voir ton rôle</p><p class="mut" style="margin:0">Cache bien ton écran.</p></div>
       <div class="s"><div class="big">${r.e}</div><div class="rname">${r.n}</div><p class="mut" style="margin:0 8px">${r.d}</p>
@@ -395,11 +410,8 @@ function renderPlayer(){
         ${s.lover&&s.lover.length?`<p style="margin:12px 0 0">💘 Tu es amoureux de <b>${s.lover.map(esc).join(", ")}</b>. Si l'un de vous meurt, l'autre aussi.</p>`:""}
       </div>
     </div>`;
-  }
-  app.innerHTML=`<h1>🐺 ${esc(P.name)}</h1><p class="mut">Partie ${esc(P.code)}</p>
-  ${P.status&&s&&!P.over?`<div class="status">${esc(P.status)}</div>`:""}
-  ${body}
-  <p style="margin-top:24px"><button class="sm" data-a="leave">${P.over?"← Accueil":"Quitter la partie"}</button></p>`;
+}
+function attachReveal(){
   const rv=$("#rv");
   if(rv){
     const on=e=>{e.preventDefault();rv.classList.add("show")},off=()=>rv.classList.remove("show");
@@ -407,6 +419,18 @@ function renderPlayer(){
     ["pointerup","pointercancel","pointerleave"].forEach(t=>rv.addEventListener(t,off));
     rv.addEventListener("contextmenu",e=>e.preventDefault());
   }
+}
+function renderPlayer(){
+  if(!P)return;
+  const s=P.state;let body="";
+  if(P.over)body=`<div class="card">${esc(P.over)}</div>`;
+  else if(!s)body=`<div class="card mut">${esc(P.status||"Connexion…")}</div>`;
+  else body=playerBody(s);
+  app.innerHTML=`<h1>🐺 ${esc(P.name)}</h1><p class="mut">Partie ${esc(P.code)}</p>
+  ${P.status&&s&&!P.over?`<div class="status">${esc(P.status)}</div>`:""}
+  ${body}
+  <p style="margin-top:24px"><button class="sm" data-a="leave">${P.over?"← Accueil":"Quitter la partie"}</button></p>`;
+  attachReveal();
 }
 actions.leave=()=>{
   if(P&&!P.over&&!confirm("Quitter la partie ?"))return;
