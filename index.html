@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1222">
+<title>Loup-Garou</title>
+<style>
+:root{--bg:#0f1222;--card:#1a1e35;--line:#2b3052;--txt:#eef0ff;--mut:#9aa0c3;--acc:#e0b45a;--red:#e2574c;--green:#4fbf8a}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--txt);-webkit-tap-highlight-color:transparent;line-height:1.5}
+main{max-width:560px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:26px;margin:8px 0 2px}
+h2{font-size:18px;margin:26px 0 8px}
+.mut{color:var(--mut);font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
+button{font:inherit;color:var(--txt);background:#252a48;border:1px solid var(--line);border-radius:10px;padding:12px 14px;cursor:pointer}
+button.pri{background:var(--acc);color:#1b1407;border-color:var(--acc);font-weight:600}
+button.sm{padding:6px 11px;font-size:14px}
+button.full{width:100%}
+button.danger{color:var(--red)}
+input,select{font:inherit;width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#11152b;color:var(--txt)}
+select.sm{width:auto;padding:6px 8px;font-size:14px}
+.list{list-style:none;padding:0;margin:0}
+.list li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.list li:last-child{border-bottom:0}
+.dot{width:9px;height:9px;border-radius:50%;background:#555b80;flex:none}
+.dot.on{background:var(--green)}
+.grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dead .grow{opacity:.45;text-decoration:line-through}
+.code{font-size:44px;letter-spacing:10px;font-weight:700;text-align:center;color:var(--acc);margin:4px 0}
+.err{color:var(--red);font-size:14px;min-height:20px;margin-top:8px}
+.note{background:#2a2440;border:1px solid #4a3f75;border-radius:10px;padding:10px 12px;margin:10px 0;font-size:15px}
+.win{background:#20382c;border-color:#3f7a5c}
+.status{background:#3a2a1c;border:1px solid #7a5a2a;border-radius:10px;padding:8px 12px;font-size:14px;margin:10px 0}
+.steps{margin:0;padding-left:22px}
+.steps li{padding:6px 0}
+.reveal{min-height:280px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none;cursor:pointer}
+.reveal .s{display:none}
+.reveal.show .s{display:block}
+.reveal.show .h{display:none}
+.big{font-size:72px;line-height:1.1}
+.rname{font-size:28px;font-weight:700;margin:8px 0}
+#qr{display:flex;justify-content:center;margin:12px 0}
+#qr img,#qr canvas{background:#fff;padding:8px;border-radius:8px}
+.tot{text-align:right;font-size:14px;margin-top:6px}
+.bad{color:var(--red)}
+.btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.btns>button{flex:1}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const ROLES={
+  loup:{n:"Loup-Garou",e:"🐺",d:"Chaque nuit, avec les autres loups, choisis une victime. Le jour, fais-toi passer pour un villageois."},
+  voyante:{n:"Voyante",e:"🔮",d:"Chaque nuit, tu découvres le rôle d'un joueur."},
+  sorciere:{n:"Sorcière",e:"🧪",d:"Tu as une potion de vie et une potion de mort, utilisables une seule fois chacune."},
+  chasseur:{n:"Chasseur",e:"🏹",d:"Quand tu meurs, tu élimines immédiatement un joueur de ton choix."},
+  cupidon:{n:"Cupidon",e:"💘",d:"La première nuit, tu désignes deux amoureux. Si l'un meurt, l'autre meurt de chagrin."},
+  petitefille:{n:"Petite Fille",e:"👧",d:"La nuit, tu peux entrouvrir les yeux pour espionner les loups. Ne te fais pas prendre !"},
+  villageois:{n:"Villageois",e:"🧑‍🌾",d:"Pas de pouvoir : trouve les loups et vote bien."}
+};
+const ORDER=["loup","voyante","sorciere","chasseur","cupidon","petitefille","villageois"];
+const PREFIX="lgthiercelieux-v1-";
+const app=document.getElementById("app");
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+const load=k=>{try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}};
+const store=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+const unstore=k=>{try{localStorage.removeItem(k)}catch(e){}};
+const shuffle=a=>{for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
+const total=c=>ORDER.reduce((s,k)=>s+(c[k]||0),0);
+const baseUrl=()=>location.href.split(/[?#]/)[0];
+const joinUrl=code=>baseUrl()+"?p="+code;
+function newCode(){const a="ABCDEFGHJKMNPQRSTUVWXYZ23456789";let s="";for(let i=0;i<4;i++)s+=a[Math.floor(Math.random()*a.length)];return s}
+function suggest(n){
+  const c={};ORDER.forEach(k=>c[k]=0);
+  if(n<1)return c;
+  c.loup=n<=5?1:n<=11?2:n<=17?3:4;
+  let left=n-c.loup;
+  for(const [k,min] of [["voyante",4],["sorciere",6],["chasseur",7],["cupidon",8],["petitefille",10]]){
+    if(n>=min&&left>0){c[k]=1;left--}
+  }
+  c.villageois=Math.max(0,left);
+  return c;
+}
+
+let peer=null,timer=null;
+function schedule(fn,ms){clearTimeout(timer);timer=setTimeout(fn,ms)}
+function killPeer(){clearTimeout(timer);if(peer){try{peer.destroy()}catch(e){}}peer=null}
+
+const actions={};
+app.addEventListener("click",e=>{
+  const b=e.target.closest("[data-a]");if(!b)return;
+  const f=actions[b.dataset.a];if(f)f(b.dataset,b);
+});
+app.addEventListener("change",e=>{
+  const s=e.target.closest("select[data-pending]");
+  if(s&&H)pending[s.dataset.pending]=s.value;
+});
+
+function home(msg){
+  H=null;P=null;
+  const h=load("lg-host");
+  app.innerHTML=`
+  <h1>🐺 Loup-Garou</h1>
+  <p class="mut">Le meneur crée la partie, les joueurs la rejoignent sur leur téléphone avec le code.</p>
+  ${h?`<div class="card"><p style="margin-top:0">Partie en cours : <b>${esc(h.code)}</b> (${h.players.length} joueurs)</p><button class="pri full" data-a="resume">Reprendre comme meneur</button></div>`:""}
+  <div class="card"><button class="${h?"":"pri "}full" data-a="create">Créer une nouvelle partie (meneur)</button></div>
+  <div class="card">
+    <p style="margin-top:0">Rejoindre une partie</p>
+    <input id="code" placeholder="Code à 4 caractères" maxlength="4" autocapitalize="characters" autocomplete="off">
+    <div style="height:10px"></div>
+    <button class="full" data-a="joincode">Rejoindre</button>
+    <div class="err" id="err">${msg?esc(msg):""}</div>
+  </div>`;
+}
+actions.create=()=>{const h=load("lg-host");if(h&&!confirm("Remplacer la partie en cours ?"))return;unstore("lg-host");startHost(null)};
+actions.resume=()=>startHost(load("lg-host"));
+actions.joincode=()=>{
+  const c=($("#code").value||"").trim().toUpperCase();
+  if(!/^[A-Z0-9]{4}$/.test(c)){$("#err").textContent="Entre le code à 4 caractères donné par le meneur.";return}
+  joinScreen(c,false);
+};
+
+/* ---------------- MENEUR ---------------- */
+let H=null,conns={},pending={},hostStatus="",hostErr="",hostNote="";
+function startHost(restore){
+  P=null;
+  H=restore||{code:newCode(),phase:"lobby",players:[],comp:suggest(0),custom:false,night:0};
+  H.showQR=H.phase==="lobby";
+  conns={};pending={};hostErr="";hostNote="";
+  history.replaceState(null,"",baseUrl());
+  openHostPeer();
+  renderHost();
+}
+function saveHost(){if(!H)return;const {showQR,...rest}=H;store("lg-host",rest)}
+function openHostPeer(){
+  killPeer();
+  hostStatus="Connexion au réseau…";
+  const p=new Peer(PREFIX+H.code);peer=p;
+  p.on("open",()=>{if(peer!==p)return;hostStatus="";saveHost();renderHost()});
+  p.on("connection",c=>{
+    c.on("data",m=>onHostMsg(c,m));
+    c.on("close",()=>{for(const id in conns)if(conns[id]===c)delete conns[id];if(H)renderHost()});
+  });
+  p.on("disconnected",()=>{if(peer!==p)return;hostStatus="Reconnexion…";renderHost();schedule(()=>{try{p.reconnect()}catch(e){}},1500)});
+  p.on("error",err=>{
+    if(peer!==p)return;
+    if(err.type==="unavailable-id"){
+      if(H.phase==="lobby"&&H.players.length===0){H.code=newCode();openHostPeer();renderHost();return}
+      hostStatus="Le code est encore réservé, nouvel essai dans quelques secondes…";
+      renderHost();schedule(openHostPeer,3000);return;
+    }
+    if(err.type==="peer-unavailable")return;
+    hostStatus="Problème réseau, nouvel essai…";renderHost();schedule(openHostPeer,3000);
+  });
+}
+function onHostMsg(c,m){
+  if(!H||!m||typeof m!=="object")return;
+  if(m.t==="hello"&&typeof m.id==="string"&&m.id.length<64){
+    let name=String(m.name||"").trim().slice(0,20)||"Joueur";
+    let p=H.players.find(x=>x.id===m.id);
+    const taken=n=>H.players.some(x=>x.id!==m.id&&x.name.toLowerCase()===n.toLowerCase());
+    if(taken(name)){let i=2;while(taken(name+" "+i))i++;name=name+" "+i}
+    if(!p){p={id:m.id,name,role:null,alive:true,lover:false};H.players.push(p)}
+    else p.name=name;
+    if(conns[m.id]&&conns[m.id]!==c){try{conns[m.id].close()}catch(e){}}
+    conns[m.id]=c;
+    changed();
+  }
+}
+function online(id){const c=conns[id];return !!(c&&c.open)}
+function stateFor(p){
+  const inGame=H.phase==="game"&&p.role;
+  return {t:"state",phase:H.phase,count:H.players.length,name:p.name,
+    role:inGame?p.role:null,alive:p.alive,
+    lover:inGame&&p.lover?H.players.filter(x=>x.lover&&x.id!==p.id).map(x=>x.name):[],
+    mates:inGame&&p.role==="loup"?H.players.filter(x=>x.role==="loup"&&x.id!==p.id).map(x=>x.name):[]};
+}
+function sendTo(id,msg){const c=conns[id];if(c&&c.open){try{c.send(msg)}catch(e){}}}
+function broadcast(){H.players.forEach(p=>sendTo(p.id,stateFor(p)))}
+function changed(){
+  if(!H)return;
+  if(!H.custom)H.comp=suggest(H.players.length);
+  saveHost();renderHost();broadcast();
+}
+
+function renderHost(){
+  if(!H)return;
+  const n=H.players.length,url=joinUrl(H.code);
+  let h=`<h1>🌙 Meneur</h1>
+  ${hostStatus?`<div class="status">${esc(hostStatus)}</div>`:""}
+  <div class="card" style="text-align:center">
+    <div class="mut">Code de la partie</div>
+    <div class="code">${esc(H.code)}</div>
+    <div class="mut" style="word-break:break-all">${esc(url)}</div>
+    ${H.showQR?`<div id="qr"></div>`:""}
+    <div class="btns"><button class="sm" data-a="share">Partager le lien</button><button class="sm" data-a="qr">${H.showQR?"Masquer":"Afficher"} le QR code</button></div>
+  </div>`;
+
+  if(H.phase==="lobby"){
+    const c=H.comp,t=total(c);
+    h+=`<h2>Joueurs (${n})</h2><div class="card">${n?`<ul class="list">${H.players.map(p=>`
+      <li><span class="dot ${online(p.id)?"on":""}"></span><span class="grow">${esc(p.name)}</span>
+      <button class="sm danger" data-a="kick" data-id="${esc(p.id)}" aria-label="Retirer">✕</button></li>`).join("")}</ul>`
+      :`<p class="mut" style="margin:0">Les joueurs apparaissent ici dès qu'ils rejoignent avec le code ou le QR code.</p>`}</div>
+    <h2>Composition</h2><div class="card"><ul class="list">${ORDER.map(k=>`
+      <li><span style="font-size:22px">${ROLES[k].e}</span><span class="grow">${ROLES[k].n}</span>
+      <button class="sm" data-a="dec" data-k="${k}" aria-label="Moins">−</button>
+      <b style="width:26px;text-align:center">${c[k]||0}</b>
+      <button class="sm" data-a="inc" data-k="${k}" aria-label="Plus">+</button></li>`).join("")}</ul>
+      <div class="tot ${t!==n?"bad":""}">${t} rôle(s) pour ${n} joueur(s)</div>
+      ${H.custom?`<div class="btns"><button class="sm" data-a="auto">Revenir à la composition conseillée</button></div>`:`<div class="mut" style="margin-top:6px">Composition conseillée, elle s'adapte quand des joueurs arrivent.</div>`}
+    </div>
+    <button class="pri full" data-a="deal">Distribuer les rôles</button>
+    <div class="err">${esc(hostErr)}</div>`;
+  } else {
+    const al=H.players.filter(p=>p.alive&&p.role),w=al.filter(p=>p.role==="loup").length,v=al.length-w;
+    let verdict="";
+    if(al.length===2&&al.every(p=>p.lover))verdict="💘 Les amoureux sont les derniers survivants : ils ont gagné !";
+    else if(w===0)verdict="🎉 Plus aucun loup en vie : le village a gagné !";
+    else if(w>=v)verdict="🐺 Les loups sont aussi nombreux que les villageois : les loups ont gagné !";
+    const late=H.players.filter(p=>!p.role);
+    if(verdict)h+=`<div class="note win">${verdict}</div>`;
+    if(hostNote)h+=`<div class="note">${esc(hostNote)}</div>`;
+    if(late.length)h+=`<h2>Nouveaux arrivants</h2><div class="card"><ul class="list">${late.map(p=>`
+      <li><span class="dot ${online(p.id)?"on":""}"></span><span class="grow">${esc(p.name)}</span>
+      <select class="sm" data-pending="${esc(p.id)}">${ORDER.map(k=>`<option value="${k}" ${(pending[p.id]||"villageois")===k?"selected":""}>${ROLES[k].e} ${ROLES[k].n}</option>`).join("")}</select>
+      <button class="sm" data-a="give" data-id="${esc(p.id)}">Donner</button>
+      <button class="sm danger" data-a="kick" data-id="${esc(p.id)}" aria-label="Retirer">✕</button></li>`).join("")}</ul></div>`;
+    h+=`<h2>Joueurs — ${al.length} en vie (${w} loup${w>1?"s":""})</h2><div class="card"><ul class="list">${H.players.filter(p=>p.role).map(p=>`
+      <li class="${p.alive?"":"dead"}"><span class="dot ${online(p.id)?"on":""}"></span>
+      <span class="grow"><b>${esc(p.name)}</b> · ${ROLES[p.role].e} ${ROLES[p.role].n}</span>
+      <button class="sm" data-a="love" data-id="${esc(p.id)}" aria-label="Amoureux">${p.lover?"💘":"♡"}</button>
+      <button class="sm" data-a="life" data-id="${esc(p.id)}">${p.alive?"☠️":"↩︎"}</button></li>`).join("")}</ul>
+      <div class="mut" style="margin-top:8px">♡ marque les amoureux · ☠️ élimine un joueur · ↩︎ annule</div></div>
+    <h2>${H.night?"Nuit "+H.night:"Guide du meneur"}</h2><div class="card">
+      ${H.night?`<ol class="steps">${nightSteps().map(s=>`<li>${s}</li>`).join("")}</ol>`:`<p class="mut" style="margin-top:0">Quand tout le monde a vu son rôle, lance la première nuit : je t'affiche l'ordre des réveils.</p>`}
+      <button class="pri full" style="margin-top:10px" data-a="night">🌙 ${H.night?"Nuit suivante":"Commencer la nuit 1"}</button>
+    </div>
+    <div class="err">${esc(hostErr)}</div>
+    <div class="btns"><button data-a="again">Rejouer (mêmes joueurs)</button><button class="danger" data-a="end">Terminer</button></div>`;
+  }
+  h+=`<p style="margin-top:24px"><button class="sm" data-a="homeh">← Accueil</button></p>`;
+  app.innerHTML=h;
+  hostErr="";
+  if(H.showQR&&window.QRCode&&$("#qr")){try{new QRCode($("#qr"),{text:url,width:180,height:180})}catch(e){}}
+}
+function nightSteps(){
+  const has=r=>H.players.some(p=>p.alive&&p.role===r);
+  const s=["Tout le village s'endort : tout le monde ferme les yeux."];
+  if(H.night===1&&H.players.some(p=>p.role==="cupidon")){
+    s.push("💘 Cupidon se réveille et désigne deux amoureux (marque-les avec ♡). Il se rendort.");
+    s.push("Les amoureux se réveillent, se reconnaissent, puis se rendorment.");
+  }
+  if(has("voyante"))s.push("🔮 La Voyante se réveille et désigne un joueur : montre-lui son rôle. Elle se rendort.");
+  if(has("loup"))s.push("🐺 Les Loups-Garous se réveillent et choisissent ensemble une victime."+(has("petitefille")?" La Petite Fille peut espionner.":"")+" Ils se rendorment.");
+  if(has("sorciere"))s.push("🧪 La Sorcière se réveille. Montre-lui la victime : veut-elle la sauver, ou tuer quelqu'un ? Elle se rendort.");
+  s.push("☀️ Le village se réveille. Annonce les morts (☠️), puis le village débat et vote.");
+  return s;
+}
+actions.share=()=>{
+  const url=joinUrl(H.code);
+  if(navigator.share){navigator.share({title:"Loup-Garou",text:"Rejoins la partie "+H.code,url}).catch(()=>{});return}
+  if(navigator.clipboard)navigator.clipboard.writeText(url).then(()=>{hostNote="Lien copié.";renderHost();hostNote=""}).catch(()=>{});
+};
+actions.qr=()=>{H.showQR=!H.showQR;renderHost()};
+actions.inc=d=>{H.custom=true;H.comp[d.k]=(H.comp[d.k]||0)+1;changed()};
+actions.dec=d=>{H.custom=true;H.comp[d.k]=Math.max(0,(H.comp[d.k]||0)-1);changed()};
+actions.auto=()=>{H.custom=false;changed()};
+actions.kick=d=>{
+  const p=H.players.find(x=>x.id===d.id);if(!p||!confirm("Retirer "+p.name+" de la partie ?"))return;
+  sendTo(p.id,{t:"kicked"});
+  const c=conns[p.id];delete conns[p.id];setTimeout(()=>{try{c&&c.close()}catch(e){}},400);
+  H.players=H.players.filter(x=>x.id!==p.id);changed();
+};
+actions.deal=()=>{
+  const n=H.players.length,c=H.comp;
+  if(n<3){hostErr="Il faut au moins 3 joueurs.";return renderHost()}
+  if(total(c)!==n){hostErr="La composition doit avoir exactement "+n+" rôles (actuellement "+total(c)+").";return renderHost()}
+  if(!c.loup){hostErr="Il faut au moins un Loup-Garou.";return renderHost()}
+  const deck=shuffle(ORDER.flatMap(k=>Array(c[k]).fill(k)));
+  H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false});
+  H.phase="game";H.night=0;H.showQR=false;hostNote="";changed();
+};
+actions.give=d=>{
+  const p=H.players.find(x=>x.id===d.id);if(!p)return;
+  p.role=pending[p.id]||"villageois";p.alive=true;p.lover=false;delete pending[p.id];changed();
+};
+actions.love=d=>{
+  const p=H.players.find(x=>x.id===d.id);if(!p)return;
+  if(!p.lover&&H.players.filter(x=>x.lover).length>=2){hostErr="Il y a déjà deux amoureux. Retire d'abord un cœur.";return renderHost()}
+  p.lover=!p.lover;hostNote="";changed();
+};
+actions.life=d=>{
+  const p=H.players.find(x=>x.id===d.id);if(!p)return;
+  p.alive=!p.alive;hostNote="";
+  if(!p.alive){
+    const notes=[];
+    if(p.role==="chasseur")notes.push("🏹 "+p.name+" était Chasseur : il élimine immédiatement un joueur.");
+    if(p.lover){const o=H.players.find(x=>x.lover&&x.id!==p.id&&x.alive);if(o){o.alive=false;notes.push("💘 "+o.name+" meurt de chagrin.");if(o.role==="chasseur")notes.push("🏹 "+o.name+" était Chasseur : il élimine immédiatement un joueur.")}}
+    hostNote=notes.join(" ");
+  }
+  changed();
+};
+actions.night=()=>{H.night++;hostNote="";changed();window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"})};
+actions.again=()=>{
+  if(!confirm("Relancer une partie avec les mêmes joueurs ?"))return;
+  H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false});
+  H.phase="lobby";H.night=0;H.showQR=true;hostNote="";changed();
+};
+actions.end=()=>{
+  if(!confirm("Terminer la partie pour tout le monde ?"))return;
+  H.players.forEach(p=>sendTo(p.id,{t:"ended"}));
+  unstore("lg-host");
+  setTimeout(()=>{killPeer();home()},400);
+};
+actions.homeh=()=>{killPeer();home()};
+
+/* ---------------- JOUEUR ---------------- */
+let P=null;
+function joinScreen(code,auto){
+  H=null;
+  const saved=load("lg-player")||{};
+  if(auto&&saved.code===code&&saved.name)return startPlayer(code,saved.name);
+  history.replaceState(null,"",baseUrl()+"?p="+code);
+  app.innerHTML=`<h1>🐺 Rejoindre</h1><p class="mut">Partie <b>${esc(code)}</b></p>
+  <div class="card"><input id="name" placeholder="Ton prénom" maxlength="20" autocomplete="off" value="${esc(saved.name||"")}">
+  <div style="height:10px"></div><button class="pri full" data-a="go" data-code="${esc(code)}">Entrer dans la partie</button><div class="err" id="err"></div></div>
+  <p><button class="sm" data-a="leave">← Accueil</button></p>`;
+  const i=$("#name");i.focus();i.addEventListener("keydown",e=>{if(e.key==="Enter")actions.go({code})});
+}
+actions.go=d=>{
+  const name=($("#name").value||"").trim();
+  if(!name){$("#err").textContent="Entre ton prénom pour que le meneur te reconnaisse.";return}
+  startPlayer(d.code,name);
+};
+function startPlayer(code,name){
+  killPeer();
+  const saved=load("lg-player")||{};
+  const id=saved.id||rid();
+  store("lg-player",{id,name,code});
+  history.replaceState(null,"",baseUrl()+"?p="+code);
+  P={code,name,id,state:null,status:"Connexion…",conn:null,over:""};
+  const p=new Peer();peer=p;
+  p.on("open",()=>{if(peer===p)pConnect()});
+  p.on("disconnected",()=>{if(peer===p)schedule(()=>{try{p.reconnect()}catch(e){}},1500)});
+  p.on("error",err=>{
+    if(peer!==p||!P)return;
+    P.status=err.type==="peer-unavailable"
+      ?"Partie introuvable. Vérifie le code et que le meneur a bien l'app ouverte. Nouvel essai…"
+      :"Problème de connexion, nouvel essai…";
+    renderPlayer();schedule(pRetry,3000);
+  });
+  renderPlayer();
+}
+function pRetry(){
+  if(!P||P.over||!peer)return;
+  if(P.conn&&P.conn.open)return;
+  if(peer.destroyed){startPlayer(P.code,P.name);return}
+  if(peer.disconnected){try{peer.reconnect()}catch(e){}schedule(pRetry,3000);return}
+  if(peer.open)pConnect();else schedule(pRetry,3000);
+}
+function pConnect(){
+  if(!P)return;
+  const c=peer.connect(PREFIX+P.code,{reliable:true});P.conn=c;
+  const to=setTimeout(()=>{if(P&&P.conn===c&&!c.open){try{c.close()}catch(e){}schedule(pRetry,200)}},8000);
+  c.on("open",()=>{clearTimeout(to);if(!P||P.conn!==c)return;P.status="";c.send({t:"hello",id:P.id,name:P.name});renderPlayer()});
+  c.on("data",m=>{
+    if(!P||!m)return;
+    if(m.t==="state"){P.state=m;P.name=m.name;renderPlayer()}
+    else if(m.t==="kicked"){P.over="Le meneur t'a retiré de la partie.";killPeer();renderPlayer()}
+    else if(m.t==="ended"){P.over="La partie est terminée. Merci d'avoir joué !";killPeer();renderPlayer()}
+  });
+  c.on("close",()=>{if(P&&P.conn===c&&!P.over){P.status="Connexion perdue, reconnexion…";renderPlayer();schedule(pRetry,2000)}});
+}
+function renderPlayer(){
+  if(!P)return;
+  const s=P.state;let body="";
+  if(P.over)body=`<div class="card">${esc(P.over)}</div>`;
+  else if(!s)body=`<div class="card mut">${esc(P.status||"Connexion…")}</div>`;
+  else if(!s.role)body=`<div class="card"><p style="margin-top:0">Tu es dans la partie 👋</p><p class="mut" style="margin-bottom:0">${s.phase==="lobby"?"Attends que le meneur distribue les rôles.":"La partie a déjà commencé : le meneur va te donner un rôle."} ${s.count} joueur${s.count>1?"s":""} dans la partie.</p></div>`;
+  else{
+    const r=ROLES[s.role];
+    body=`${s.alive?"":`<div class="note">☠️ Tu es mort. Garde le silence jusqu'à la fin de la partie !</div>`}
+    <div class="card reveal" id="rv">
+      <div class="h"><div class="big">🂠</div><p style="font-size:18px;margin:10px 0 4px">Maintiens appuyé pour voir ton rôle</p><p class="mut" style="margin:0">Cache bien ton écran.</p></div>
+      <div class="s"><div class="big">${r.e}</div><div class="rname">${r.n}</div><p class="mut" style="margin:0 8px">${r.d}</p>
+        ${s.mates&&s.mates.length?`<p style="margin:12px 0 0">Les autres loups : <b>${s.mates.map(esc).join(", ")}</b></p>`:""}
+        ${s.lover&&s.lover.length?`<p style="margin:12px 0 0">💘 Tu es amoureux de <b>${s.lover.map(esc).join(", ")}</b>. Si l'un de vous meurt, l'autre aussi.</p>`:""}
+      </div>
+    </div>`;
+  }
+  app.innerHTML=`<h1>🐺 ${esc(P.name)}</h1><p class="mut">Partie ${esc(P.code)}</p>
+  ${P.status&&s&&!P.over?`<div class="status">${esc(P.status)}</div>`:""}
+  ${body}
+  <p style="margin-top:24px"><button class="sm" data-a="leave">${P.over?"← Accueil":"Quitter la partie"}</button></p>`;
+  const rv=$("#rv");
+  if(rv){
+    const on=e=>{e.preventDefault();rv.classList.add("show")},off=()=>rv.classList.remove("show");
+    rv.addEventListener("pointerdown",on);
+    ["pointerup","pointercancel","pointerleave"].forEach(t=>rv.addEventListener(t,off));
+    rv.addEventListener("contextmenu",e=>e.preventDefault());
+  }
+}
+actions.leave=()=>{
+  if(P&&!P.over&&!confirm("Quitter la partie ?"))return;
+  const s=load("lg-player");if(s){delete s.code;store("lg-player",s)}
+  killPeer();history.replaceState(null,"",baseUrl());home();
+};
+
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden||!peer)return;
+  if(H&&peer.disconnected){try{peer.reconnect()}catch(e){}}
+  if(P&&!P.over&&!(P.conn&&P.conn.open))schedule(pRetry,200);
+});
+
+(function boot(){
+  if(!window.Peer){app.innerHTML=`<h1>🐺 Loup-Garou</h1><div class="card">Impossible de charger le module de connexion. Vérifie ta connexion Internet puis recharge la page.</div>`;return}
+  const code=(new URLSearchParams(location.search).get("p")||"").toUpperCase();
+  if(/^[A-Z0-9]{4}$/.test(code))joinScreen(code,true);else home();
+})();
+</script>
+</body>
+</html>
