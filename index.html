@@ -47,6 +47,9 @@ select.sm{width:auto;padding:6px 8px;font-size:14px}
 .bad{color:var(--red)}
 .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
 .btns>button{flex:1}
+button.i{padding:2px 9px;font-size:13px;border-radius:99px;color:var(--mut);flex:none}
+.list li.info{display:block;font-size:14px;color:var(--mut);padding:0 0 12px 34px}
+details summary{cursor:pointer}
 </style>
 </head>
 <body>
@@ -68,6 +71,10 @@ const ROLES={
   villageois:{n:"Villageois",e:"🧑‍🌾",d:"Pas de pouvoir : trouve les loups et vote bien."}
 };
 const ORDER=["loup","voyante","sorciere","chasseur","cupidon","petitefille","salvateur","ancien","idiot","corbeau","villageois"];
+const MAIRE={n:"Maire",e:"🎖️",d:"Élu par le village le premier jour. Sa voix compte double, il tranche les égalités, et à sa mort il désigne son successeur."};
+let infoOpen=null;
+const ibtn=k=>`<button class="sm i" data-a="info" data-k="${esc(k)}" aria-label="À quoi sert ce rôle ?">ⓘ</button>`;
+const iline=(k,txt)=>infoOpen===k?`<li class="info">${txt}</li>`:"";
 const fmt=ms=>{const s=Math.max(0,Math.ceil(ms/1000));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")};
 const newTimer=d=>({dur:d||180000,left:d||180000,running:false,endsAt:0});
 const PREFIX="lgthiercelieux-v1-";
@@ -100,6 +107,7 @@ function schedule(fn,ms){clearTimeout(timer);timer=setTimeout(fn,ms)}
 function killPeer(){clearTimeout(timer);if(peer){try{peer.destroy()}catch(e){}}peer=null}
 
 const actions={};
+actions.info=d=>{infoOpen=infoOpen===d.k?null:d.k;if(H)renderHost();else if(P)renderPlayer()};
 app.addEventListener("click",e=>{
   const b=e.target.closest("[data-a]");if(!b)return;
   const f=actions[b.dataset.a];if(f)f(b.dataset,b);
@@ -180,21 +188,33 @@ function onHostMsg(c,m){
     conns[m.id]=c;
     changed();
   }
-  if(m.t==="vote"&&conns[m.id]===c)castVote(m.id,m.target);
+  if(conns[m.id]===c)playerAct(m.id,m);
 }
+function playerAct(id,m){
+  if(m.t==="vote")castVote(id,m.target);
+  if(m.t==="tiebreak"&&id===H.mayor&&mayorAlive()){const tie=tieLeaders();if(tie&&tie.includes(m.name)){H.vote.tieChoice=m.name;changed()}}
+  if(m.t==="succ"&&H.succ&&id===H.mayor&&inPlay().some(x=>x.name===m.name))setMayor(m.name);
+}
+function mayorAlive(){return !!(H.mayor&&!H.succ&&H.players.some(p=>p.id===H.mayor&&p.alive))}
+const isMayor=p=>H.mayor===p.id&&!H.succ;
+const mtag=p=>isMayor(p)?" 🎖️":"";
+function setMayor(name){const p=H.players.find(x=>x.name===name&&x.alive);if(!p)return;H.mayor=p.id;H.succ=false;hostNote="🎖️ "+p.name+" est le nouveau Maire.";if(H.vote&&H.vote.kind==="mayor")H.vote=null;changed()}
+function voteOptions(p){return H.vote&&H.vote.kind==="mayor"?inPlay():inPlay().filter(x=>x.id!==p.id)}
+function tieLeaders(){const v=H.vote;if(!v||v.open||v.kind==="mayor")return null;const r=tally();if(r.length<2||r[0].n!==r[1].n)return null;return r.filter(x=>x.n===r[0].n).map(x=>x.name)}
 function online(id){const c=conns[id];return !!(c&&c.open)}
 const inPlay=()=>H.players.filter(p=>p.role&&p.alive);
 const canVote=p=>p.role&&p.alive&&!p.revealed;
 function castVote(voterId,target){
   const v=H.vote,p=H.players.find(x=>x.id===voterId);
   if(!v||!v.open||!p||!canVote(p)||typeof target!=="string")return;
-  if(!inPlay().some(x=>x.name===target)||target===p.name)return;
+  if(!voteOptions(p).some(x=>x.name===target))return;
   v.votes[voterId]=target;changed();
 }
 function tally(){
   const v=H.vote,t={};
-  Object.values(v.votes).forEach(n=>t[n]=(t[n]||0)+1);
-  if(v.crow&&inPlay().some(x=>x.name===v.crow))t[v.crow]=(t[v.crow]||0)+2;
+  const elim=v.kind!=="mayor";
+  Object.entries(v.votes).forEach(([id,n])=>t[n]=(t[n]||0)+(elim&&id===H.mayor&&mayorAlive()?2:1));
+  if(elim&&v.crow&&inPlay().some(x=>x.name===v.crow))t[v.crow]=(t[v.crow]||0)+2;
   return Object.entries(t).map(([name,n])=>({name,n,crow:name===v.crow})).sort((a,b)=>b.n-a.n);
 }
 function timerLeft(){const t=H.timer;return t.running?Math.max(0,t.endsAt-Date.now()):t.left}
@@ -206,7 +226,11 @@ function stateFor(p){
     lover:inGame&&p.lover?H.players.filter(x=>x.lover&&x.id!==p.id).map(x=>x.name):[],
     mates:inGame&&p.role==="loup"?H.players.filter(x=>x.role==="loup"&&x.id!==p.id).map(x=>x.name):[],
     timer:H.phase==="game"?{running:H.timer.running,remaining:timerLeft(),dur:H.timer.dur}:null,
-    vote:inGame&&v?{open:v.open,options:v.open?inPlay().filter(x=>x.id!==p.id).map(x=>x.name):[],
+    mayor:inGame&&H.mayor&&!H.succ?(H.players.find(x=>x.id===H.mayor)||{}).name||null:null,isMayor:!!(inGame&&isMayor(p)),
+    succ:inGame&&H.succ&&H.mayor===p.id?inPlay().filter(x=>x.id!==p.id).map(x=>x.name):null,
+    tie:inGame&&p.id===H.mayor&&mayorAlive()?tieLeaders():null,
+    roles:inGame?[...new Set(H.players.filter(x=>x.role).map(x=>x.role))]:[],
+    vote:inGame&&v?{kind:v.kind||"elim",tieChoice:v.tieChoice||null,open:v.open,options:v.open?voteOptions(p).map(x=>x.name):[],
       mine:v.votes[p.id]||null,canVote:canVote(p),count:Object.keys(v.votes).length,
       total:H.players.filter(canVote).length,results:v.open?null:tally()}:null};
 }
@@ -245,10 +269,11 @@ function renderHost(){
       :`<p class="mut" style="margin:0">Les joueurs apparaissent ici dès qu'ils rejoignent avec le code ou le QR code.</p>`}
       <div class="btns"><button class="sm" data-a="bot">🤖 Ajouter un joueur test</button>${H.players.some(p=>p.bot)?`<button class="sm danger" data-a="nobots">Retirer les tests</button>`:""}</div></div>
     <h2>Composition</h2><div class="card"><ul class="list">${ORDER.map(k=>`
-      <li><span style="font-size:22px">${ROLES[k].e}</span><span class="grow">${ROLES[k].n}</span>
+      <li><span style="font-size:22px">${ROLES[k].e}</span><span class="grow">${ROLES[k].n}</span>${ibtn(k)}
       <button class="sm" data-a="dec" data-k="${k}" aria-label="Moins">−</button>
       <b style="width:26px;text-align:center">${c[k]||0}</b>
-      <button class="sm" data-a="inc" data-k="${k}" aria-label="Plus">+</button></li>`).join("")}</ul>
+      <button class="sm" data-a="inc" data-k="${k}" aria-label="Plus">+</button></li>${iline(k,ROLES[k].d)}`).join("")}
+      <li><span style="font-size:22px">${MAIRE.e}</span><span class="grow">Maire <span class="mut">(élu en jeu)</span></span>${ibtn("maire")}</li>${iline("maire",MAIRE.d)}</ul>
       <div class="tot ${t!==n?"bad":""}">${t} rôle(s) pour ${n} joueur(s)</div>
       ${H.custom?`<div class="btns"><button class="sm" data-a="auto">Revenir à la composition conseillée</button></div>`:`<div class="mut" style="margin-top:6px">Composition conseillée, elle s'adapte quand des joueurs arrivent.</div>`}
     </div>
@@ -270,16 +295,17 @@ function renderHost(){
       <button class="sm danger" data-a="kick" data-id="${esc(p.id)}" aria-label="Retirer">✕</button></li>`).join("")}</ul></div>`;
     h+=`<h2>Joueurs — ${al.length} en vie (${w} loup${w>1?"s":""})</h2><div class="card"><ul class="list">${H.players.filter(p=>p.role).map(p=>`
       <li class="${p.alive?"":"dead"}">${dot(p)}
-      <span class="grow"><b>${esc(p.name)}</b> · ${ROLES[p.role].e} ${ROLES[p.role].n}${p.revealed?" (révélé)":""}</span>
+      <span class="grow"><b>${esc(p.name)}</b>${mtag(p)} · ${ROLES[p.role].e} ${ROLES[p.role].n}${p.revealed?" (révélé)":""}</span>${ibtn("p:"+p.id)}
       <button class="sm" data-a="peek" data-id="${esc(p.id)}" aria-label="Voir son écran">👁</button>
       <button class="sm" data-a="love" data-id="${esc(p.id)}" aria-label="Amoureux">${p.lover?"💘":"♡"}</button>
-      <button class="sm" data-a="life" data-id="${esc(p.id)}">${p.alive?"☠️":"↩︎"}</button></li>`).join("")}</ul>
-      <div class="mut" style="margin-top:8px">👁 voir son écran · ♡ amoureux · ☠️ éliminer · ↩︎ annuler</div>
+      <button class="sm" data-a="life" data-id="${esc(p.id)}">${p.alive?"☠️":"↩︎"}</button></li>${iline("p:"+p.id,ROLES[p.role].d+(isMayor(p)?" 🎖️ "+MAIRE.d:""))}`).join("")}</ul>
+      <div class="mut" style="margin-top:8px">ⓘ rôle · 👁 son écran · ♡ amoureux · ☠️ éliminer · ↩︎ annuler</div>
       <div class="btns"><button class="sm" data-a="bot">🤖 Simuler un retardataire</button></div></div>
     <h2>${H.night?"Nuit "+H.night:"Guide du meneur"}</h2><div class="card">
       ${H.night?`<ol class="steps">${nightSteps().map(s=>`<li>${s}</li>`).join("")}</ol>`:`<p class="mut" style="margin-top:0">Quand tout le monde a vu son rôle, lance la première nuit : je t'affiche l'ordre des réveils.</p>`}
       <button class="pri full" style="margin-top:10px" data-a="night">🌙 ${H.night?"Nuit suivante":"Commencer la nuit 1"}</button>
     </div>
+    ${succCard()}
     ${timerCard()}
     ${voteCard()}
     <div class="err">${esc(hostErr)}</div>
@@ -303,7 +329,7 @@ function nightSteps(){
   if(has("loup"))s.push("🐺 Les Loups-Garous se réveillent et choisissent ensemble une victime."+(has("petitefille")?" La Petite Fille peut espionner.":"")+" Ils se rendorment.");
   if(has("sorciere"))s.push("🧪 La Sorcière se réveille. Montre-lui la victime : veut-elle la sauver, ou tuer quelqu'un ? Elle se rendort.");
   if(has("corbeau"))s.push("🐦 Le Corbeau se réveille et peut désigner un joueur : retiens-le, il aura 2 voix contre lui au vote. Il se rendort.");
-  s.push("☀️ Le village se réveille. Annonce les morts (☠️), lance le minuteur du débat, puis le vote.");
+  s.push("☀️ Le village se réveille. Annonce les morts (☠️), lance le minuteur du débat, puis le vote."+(H.mayor?"":" Le premier jour, élisez d'abord le Maire (🎖️)."));
   return s;
 }
 function timerCard(){
@@ -314,27 +340,41 @@ function timerCard(){
     <div class="btns">${t.running?`<button class="pri" data-a="tpause">⏸ Pause</button>`:`<button class="pri" data-a="tstart">▶ ${left<t.dur&&left>0?"Reprendre":"Démarrer"}</button>`}<button data-a="treset">↺ Remettre à zéro</button></div>
     <div class="mut" style="margin-top:8px">Le minuteur s'affiche aussi sur le téléphone des joueurs.</div></div>`;
 }
+function succCard(){
+  if(!H.succ)return "";
+  const m=H.players.find(p=>p.id===H.mayor);if(!m)return "";
+  return `<h2>🎖️ Succession du Maire</h2><div class="card">
+    <p style="margin-top:0">${esc(m.name)} était Maire : il désigne son successeur${m.bot?"":" sur son téléphone"}, ou tu le nommes ici.</p>
+    <div class="btns">${inPlay().map(p=>`<button class="sm" data-a="mnom" data-name="${esc(p.name)}">${esc(p.name)}</button>`).join("")}</div></div>`;
+}
 function voteCard(){
   const v=H.vote,alive=inPlay(),voters=H.players.filter(canVote);
   if(!v){
     const crow=H.players.some(p=>p.role==="corbeau");
+    const elect=!H.mayor&&!H.succ;
     return `<h2>🗳 Vote du village</h2><div class="card">
       <p class="mut" style="margin-top:0">Chaque joueur vivant vote en secret sur son téléphone. Personne, même pas toi, ne voit qui a voté pour qui.</p>
       ${crow?`<label class="mut">Joueur désigné par le Corbeau (+2 voix)</label><select id="crow" style="margin:6px 0 10px"><option value="">Personne</option>${alive.map(p=>`<option>${esc(p.name)}</option>`).join("")}</select>`:""}
-      <button class="pri full" data-a="vopen">Lancer le vote</button></div>`;
+      <div class="btns">${elect?`<button data-a="vmayor">🎖️ Élire le Maire</button>`:""}<button class="pri" data-a="vopen">Lancer le vote</button></div>
+      ${H.mayor&&!H.succ?`<div class="mut" style="margin-top:8px">🎖️ La voix du Maire compte double.</div>`:""}</div>`;
   }
   if(v.open){
     const n=Object.keys(v.votes).length,bots=voters.some(p=>p.bot&&!v.votes[p.id]);
-    return `<h2>🗳 Vote en cours</h2><div class="card">
+    return `<h2>${v.kind==="mayor"?"🎖️ Élection du Maire en cours":"🗳 Vote en cours"}</h2><div class="card">
       <div class="code" style="font-size:32px;letter-spacing:2px">${n} / ${voters.length}</div>
       <p class="mut" style="text-align:center;margin-top:0">joueurs ont voté${v.crow?` · le Corbeau a désigné ${esc(v.crow)} (+2)`:""}</p>
       <div class="btns">${bots?`<button class="sm" data-a="vbots">🤖 Faire voter les tests</button>`:""}<button class="pri" data-a="vclose">Clore le vote</button><button class="sm danger" data-a="vcancel">Annuler</button></div></div>`;
   }
   const r=tally(),top=r.length?r[0].n:0,leaders=r.filter(x=>x.n===top);
+  if(v.kind==="mayor")return `<h2>🎖️ Résultat de l'élection</h2><div class="card">
+    ${r.length?`<ul class="list">${r.map(x=>`<li><span class="grow">${esc(x.name)}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}
+    ${leaders.length>1?`<div class="note">Égalité : relance l'élection ou choisis parmi les ex æquo.</div>`:""}
+    <div class="btns">${leaders.map(x=>`<button class="pri" data-a="mnom" data-name="${esc(x.name)}">🎖️ Nommer ${esc(x.name)}</button>`).join("")}<button data-a="vagain">Revoter</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
+  const tie=leaders.length>1,ma=mayorAlive(),mname=ma?H.players.find(p=>p.id===H.mayor).name:"";
   return `<h2>🗳 Résultat du vote</h2><div class="card">
     ${r.length?`<ul class="list">${r.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}
-    ${leaders.length>1?`<div class="note">Égalité entre ${leaders.map(x=>esc(x.name)).join(" et ")}. Relance un vote ou tranche selon vos règles.</div>`:""}
-    <div class="btns">${leaders.length===1?`<button class="pri" data-a="vkill" data-name="${esc(leaders[0].name)}">☠️ Éliminer ${esc(leaders[0].name)}</button>`:""}<button data-a="vagain">Nouveau vote</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
+    ${tie?`<div class="note">Égalité entre ${leaders.map(x=>esc(x.name)).join(" et ")}. ${ma?(v.tieChoice?`🎖️ Le Maire ${esc(mname)} a choisi : <b>${esc(v.tieChoice)}</b>.`:`🎖️ Le Maire ${esc(mname)} tranche sur son téléphone…`):"Relance un vote ou tranche selon vos règles."}</div>`:""}
+    <div class="btns">${(tie?(v.tieChoice?[v.tieChoice]:leaders.map(x=>x.name)):[leaders[0]&&leaders[0].name]).filter(Boolean).map(n=>`<button class="pri" data-a="vkill" data-name="${esc(n)}">☠️ Éliminer ${esc(n)}</button>`).join("")}<button data-a="vagain">Nouveau vote</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
 }
 actions.share=()=>{
   const url=joinUrl(H.code);
@@ -358,7 +398,7 @@ actions.deal=()=>{
   if(!c.loup){hostErr="Il faut au moins un Loup-Garou.";return renderHost()}
   const deck=shuffle(ORDER.flatMap(k=>Array(c[k]).fill(k)));
   H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false;p.revealed=false});
-  H.vote=null;H.timer=newTimer(H.timer.dur);
+  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;
   H.phase="game";H.night=0;H.showQR=false;hostNote="";changed();
 };
 actions.give=d=>{
@@ -374,6 +414,7 @@ function kill(p,byVote){
   const notes=[];
   const one=x=>{
     x.alive=false;
+    if(x.id===H.mayor&&!H.succ){H.succ=true;notes.push("🎖️ "+x.name+" était Maire : il désigne son successeur.")}
     if(x.role==="chasseur")notes.push("🏹 "+x.name+" était Chasseur : il élimine immédiatement un joueur.");
     if(x.role==="ancien")notes.push(byVote?"🧓 Le village a éliminé l'Ancien : les villageois perdent leurs pouvoirs.":"🧓 Si c'est la première attaque des loups contre l'Ancien, il survit : appuie sur ↩︎.");
   };
@@ -384,27 +425,32 @@ function kill(p,byVote){
 actions.life=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
   hostNote="";
-  if(p.alive)hostNote=kill(p,false);else p.alive=true;
+  if(p.alive)hostNote=kill(p,false);else{p.alive=true;if(H.succ&&H.mayor===p.id)H.succ=false}
   changed();
 };
 actions.tset=d=>{H.timer=newTimer(+d.m*60000);changed()};
 actions.tstart=()=>{const t=H.timer;if(t.left<=0)t.left=t.dur;t.running=true;t.endsAt=Date.now()+t.left;changed()};
 actions.tpause=()=>{const t=H.timer;t.left=timerLeft();t.running=false;changed()};
 actions.treset=()=>{H.timer=newTimer(H.timer.dur);changed()};
+actions.vmayor=()=>{
+  if(H.players.filter(canVote).length<2){hostErr="Il faut au moins 2 joueurs qui peuvent voter.";return renderHost()}
+  H.vote={kind:"mayor",open:true,votes:{}};hostNote="";changed();
+};
+actions.mnom=d=>setMayor(d.name);
 actions.vopen=()=>{
   const c=$("#crow");
   if(H.players.filter(canVote).length<2){hostErr="Il faut au moins 2 joueurs qui peuvent voter.";return renderHost()}
-  H.vote={open:true,votes:{},crow:c&&c.value?c.value:null};hostNote="";changed();
+  H.vote={kind:"elim",open:true,votes:{},crow:c&&c.value?c.value:null};hostNote="";changed();
 };
 actions.vbots=()=>{
   H.players.filter(p=>p.bot&&canVote(p)&&!H.vote.votes[p.id]).forEach(p=>{
-    const opts=inPlay().filter(x=>x.id!==p.id);
+    const opts=voteOptions(p);
     if(opts.length)H.vote.votes[p.id]=opts[Math.floor(Math.random()*opts.length)].name;
   });changed();
 };
 actions.vclose=()=>{H.vote.open=false;changed()};
 actions.vcancel=()=>{H.vote=null;changed()};
-actions.vagain=()=>{H.vote={open:true,votes:{},crow:H.vote.crow};changed()};
+actions.vagain=()=>{H.vote={kind:H.vote.kind,open:true,votes:{},crow:H.vote.crow};changed()};
 actions.vdone=()=>{H.vote=null;changed()};
 actions.vkill=d=>{
   const p=H.players.find(x=>x.name===d.name&&x.alive);if(!p)return;
@@ -412,10 +458,13 @@ actions.vkill=d=>{
   else hostNote="☠️ Le village a éliminé "+p.name+". "+kill(p,true);
   H.vote=null;changed();
 };
-actions.vote=d=>{
-  if(P&&P.conn&&P.conn.open){P.conn.send({t:"vote",id:P.id,target:d.name});return}
-  if(H&&H.preview)castVote(H.preview,d.name);
-};
+function pSend(m){
+  if(P&&P.conn&&P.conn.open){P.conn.send({...m,id:P.id});return}
+  if(H&&H.preview)playerAct(H.preview,m);
+}
+actions.vote=d=>pSend({t:"vote",target:d.name});
+actions.tiebreak=d=>pSend({t:"tiebreak",name:d.name});
+actions.succ=d=>pSend({t:"succ",name:d.name});
 setInterval(()=>{
   document.querySelectorAll("[data-end]").forEach(el=>{
     const end=+el.dataset.end;if(!end)return;
@@ -431,7 +480,7 @@ actions.night=()=>{H.night++;hostNote="";changed();window.scrollTo({top:document
 actions.again=()=>{
   if(!confirm("Relancer une partie avec les mêmes joueurs ?"))return;
   H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false;p.revealed=false});
-  H.vote=null;H.timer=newTimer(H.timer.dur);
+  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;
   H.phase="lobby";H.night=0;H.showQR=true;hostNote="";changed();
 };
 actions.end=()=>{
@@ -519,15 +568,22 @@ function playerBody(s){
       <div class="code ${!t.running&&t.remaining<=0?"bad":""}" data-end="${end}">${t.remaining>0?fmt(t.remaining):"Temps écoulé"}</div></div>`;
   }
   if(v&&v.open){
-    if(v.canVote)day+=`<div class="card"><p style="margin-top:0"><b>🗳 Le village vote</b><br><span class="mut">Ton vote est anonyme. Tu peux changer d'avis jusqu'à la fin du vote.</span></p>
-      <ul class="list">${v.options.map(n=>`<li><button class="full ${v.mine===n?"pri":""}" data-a="vote" data-name="${esc(n)}">${v.mine===n?"✓ ":""}${esc(n)}</button></li>`).join("")}</ul>
+    if(v.canVote)day+=`<div class="card"><p style="margin-top:0"><b>${v.kind==="mayor"?"🎖️ Élection du Maire":"🗳 Le village vote"}</b><br><span class="mut">Ton vote est anonyme. Tu peux changer d'avis jusqu'à la fin du vote.</span></p>
+      <ul class="list">${v.options.map(n=>`<li><button class="full ${v.mine===n?"pri":""}" data-a="vote" data-name="${esc(n)}">${v.mine===n?"✓ ":""}${esc(n)}${n===s.name?" (toi)":""}${n===s.mayor&&v.kind!=="mayor"?" 🎖️":""}</button></li>`).join("")}</ul>
       <p class="mut" style="margin-bottom:0">${v.mine?"Vote enregistré. ":""}${v.count} / ${v.total} ont voté.</p></div>`;
-    else day+=`<div class="card"><b>🗳 Le village vote</b><p class="mut" style="margin-bottom:0">${s.alive?"Ton rôle a été révélé : tu ne votes plus.":"Les morts ne votent pas."} ${v.count} / ${v.total} ont voté.</p></div>`;
+    else day+=`<div class="card"><b>${v.kind==="mayor"?"🎖️ Élection du Maire":"🗳 Le village vote"}</b><p class="mut" style="margin-bottom:0">${s.alive?"Ton rôle a été révélé : tu ne votes plus.":"Les morts ne votent pas."} ${v.count} / ${v.total} ont voté.</p></div>`;
   } else if(v&&v.results){
-    day+=`<div class="card"><b>🗳 Résultat du vote</b>${v.results.length?`<ul class="list">${v.results.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}</div>`;
+    day+=`<div class="card"><b>${v.kind==="mayor"?"🎖️ Résultat de l'élection":"🗳 Résultat du vote"}</b>${v.results.length?`<ul class="list">${v.results.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}</div>`;
   }
+  if(s.tie)day+=`<div class="card" style="border-color:var(--acc)"><b>🎖️ Égalité : c'est toi qui tranches</b><p class="mut">En tant que Maire, choisis qui est éliminé.</p>
+    <div class="btns">${s.tie.map(n=>`<button class="${v&&v.tieChoice===n?"pri":""}" data-a="tiebreak" data-name="${esc(n)}">${v&&v.tieChoice===n?"✓ ":""}${esc(n)}</button>`).join("")}</div></div>`;
+  if(s.succ)day=`<div class="card" style="border-color:var(--acc)"><b>🎖️ Désigne ton successeur</b><p class="mut">Tu étais Maire : choisis qui reprend ton titre.</p>
+    <div class="btns">${s.succ.map(n=>`<button data-a="succ" data-name="${esc(n)}">${esc(n)}</button>`).join("")}</div></div>`+day;
+  if(s.mayor&&!s.isMayor)day=`<p class="mut" style="margin:0 0 4px">🎖️ Maire : <b>${esc(s.mayor)}</b></p>`+day;
+  const rolesInfo=s.roles&&s.roles.length?`<details class="card"><summary><b>📖 Rôles de cette partie</b></summary><ul class="list" style="margin-top:8px">${[...s.roles.map(k=>ROLES[k]),MAIRE].map(x=>`<li style="display:block"><b>${x.e} ${x.n}</b><br><span class="mut">${x.d}</span></li>`).join("")}</ul></details>`:"";
   return `${s.alive?"":`<div class="note">☠️ Tu es mort. Garde le silence jusqu'à la fin de la partie !</div>`}
     ${s.revealed?`<div class="note">🤪 Ton rôle d'Idiot du village a été révélé : tu restes en vie mais tu ne votes plus.</div>`:""}
+    ${s.isMayor?`<div class="note">🎖️ Tu es le Maire : ta voix compte double et tu tranches les égalités.</div>`:""}
     ${day}
     <div class="card reveal" id="rv">
       <div class="h"><div class="big">🂠</div><p style="font-size:18px;margin:10px 0 4px">Maintiens appuyé pour voir ton rôle</p><p class="mut" style="margin:0">Cache bien ton écran.</p></div>
@@ -535,7 +591,7 @@ function playerBody(s){
         ${s.mates&&s.mates.length?`<p style="margin:12px 0 0">Les autres loups : <b>${s.mates.map(esc).join(", ")}</b></p>`:""}
         ${s.lover&&s.lover.length?`<p style="margin:12px 0 0">💘 Tu es amoureux de <b>${s.lover.map(esc).join(", ")}</b>. Si l'un de vous meurt, l'autre aussi.</p>`:""}
       </div>
-    </div>`;
+    </div>${rolesInfo}`;
 }
 function attachReveal(){
   const rv=$("#rv");
