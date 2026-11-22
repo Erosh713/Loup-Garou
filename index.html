@@ -50,6 +50,10 @@ select.sm{width:auto;padding:6px 8px;font-size:14px}
 button.i{padding:2px 9px;font-size:13px;border-radius:99px;color:var(--mut);flex:none}
 .list li.info{display:block;font-size:14px;color:var(--mut);padding:0 0 12px 34px}
 details summary{cursor:pointer}
+#qr{cursor:zoom-in}
+.zoom{position:fixed;inset:0;z-index:50;background:#fff;color:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;cursor:zoom-out;padding:16px}
+.zoom .zc{font-size:52px;font-weight:700;letter-spacing:12px}
+.zoom .zh{font-size:15px;color:#555}
 </style>
 </head>
 <body>
@@ -278,7 +282,7 @@ function renderHost(){
     <div class="mut">Code de la partie</div>
     <div class="code">${esc(H.code)}</div>
     <div class="mut" style="word-break:break-all">${esc(url)}</div>
-    ${H.showQR?`<div id="qr"></div>`:""}
+    ${H.showQR?`<div id="qr" data-a="qrzoom" role="button" aria-label="Agrandir le QR code"></div><div class="mut" style="font-size:13px">Appuie sur le QR code pour l'agrandir</div>`:""}
     <div class="btns"><button class="sm" data-a="share">Partager le lien</button><button class="sm" data-a="qr">${H.showQR?"Masquer":"Afficher"} le QR code</button></div>
   </div>`;
   const pv=H.preview&&H.players.find(p=>p.id===H.preview);
@@ -409,6 +413,17 @@ actions.share=()=>{
   if(navigator.clipboard)navigator.clipboard.writeText(url).then(()=>{hostNote="Lien copié.";renderHost();hostNote=""}).catch(()=>{});
 };
 actions.qr=()=>{H.showQR=!H.showQR;renderHost()};
+actions.qrzoom=()=>{
+  if(!H||!window.QRCode||document.querySelector(".zoom"))return;
+  const z=document.createElement("div");z.className="zoom";
+  z.innerHTML=`<div id="qrbig"></div><div class="zc">${esc(H.code)}</div><div class="zh">Scanne pour rejoindre · touche l'écran pour fermer</div>`;
+  document.body.appendChild(z);
+  const size=Math.floor(Math.min(window.innerWidth*0.86,window.innerHeight*0.62,520));
+  try{new QRCode(z.querySelector("#qrbig"),{text:joinUrl(H.code),width:size,height:size,correctLevel:QRCode.CorrectLevel.M})}catch(e){}
+  const close=()=>{z.remove();document.removeEventListener("keydown",esc_)};
+  const esc_=e=>{if(e.key==="Escape")close()};
+  z.addEventListener("click",close);document.addEventListener("keydown",esc_);
+};
 actions.inc=d=>{H.custom=true;H.comp[d.k]=(H.comp[d.k]||0)+1;changed()};
 actions.dec=d=>{H.custom=true;H.comp[d.k]=Math.max(0,(H.comp[d.k]||0)-1);changed()};
 actions.auto=()=>{H.custom=false;changed()};
