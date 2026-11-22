@@ -225,7 +225,7 @@ function mayorAlive(){return !!(H.mayor&&!H.succ&&H.players.some(p=>p.id===H.may
 const isMayor=p=>H.mayor===p.id&&!H.succ;
 const mtag=p=>isMayor(p)?" 🎖️":"";
 function setMayor(name){const p=H.players.find(x=>x.name===name&&x.alive);if(!p)return;H.mayor=p.id;H.succ=false;hostNote="🎖️ "+p.name+" est le nouveau Maire.";if(H.vote&&H.vote.kind==="mayor")H.vote=null;changed()}
-function voteOptions(p){return H.vote&&H.vote.kind==="mayor"?inPlay():inPlay().filter(x=>x.id!==p.id)}
+function voteOptions(p){return inPlay().filter(x=>x.id!==p.id)}
 function tieLeaders(){const v=H.vote;if(!v||v.open||v.kind==="mayor")return null;const r=tally();if(r.length<2||r[0].n!==r[1].n)return null;return r.filter(x=>x.n===r[0].n).map(x=>x.name)}
 function online(id){const c=conns[id];return !!(c&&Date.now()-c.seen<35000)}
 const inPlay=()=>H.players.filter(p=>p.role&&p.alive);
