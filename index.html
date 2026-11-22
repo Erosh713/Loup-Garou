@@ -69,12 +69,12 @@ details summary{cursor:pointer}
 const ROLES={
   loup:{n:"Loup-Garou",e:"🐺",d:"Chaque nuit, avec les autres loups, choisis une victime. Le jour, fais-toi passer pour un villageois."},
   voyante:{n:"Voyante",e:"🔮",d:"Chaque nuit, tu découvres le rôle d'un joueur."},
-  sorciere:{n:"Sorcière",e:"🧪",d:"Tu as une potion de vie et une potion de mort, utilisables une seule fois chacune."},
-  chasseur:{n:"Chasseur",e:"🏹",d:"Quand tu meurs, tu élimines immédiatement un joueur de ton choix."},
+  sorciere:{n:"Sorcière",e:"🧪",d:"Tu as une potion de vie (sauver la victime des loups, toi comprise) et une potion de mort, une seule fois chacune dans la partie."},
+  chasseur:{n:"Chasseur",e:"🏹",d:"Quand tu meurs (la nuit ou par le vote), tu tires immédiatement sur un joueur de ton choix, qui meurt avec toi. Une seule fois."},
   cupidon:{n:"Cupidon",e:"💘",d:"La première nuit, tu désignes deux amoureux. Si l'un meurt, l'autre meurt de chagrin."},
   petitefille:{n:"Petite Fille",e:"👧",d:"La nuit, tu peux entrouvrir les yeux pour espionner les loups. Ne te fais pas prendre !"},
-  salvateur:{n:"Salvateur",e:"🛡️",d:"Chaque nuit, tu protèges un joueur de l'attaque des loups. Jamais le même deux nuits de suite."},
-  ancien:{n:"Ancien",e:"🧓",d:"Tu survis à la première attaque des loups. Mais si le village t'élimine, tous les villageois perdent leurs pouvoirs."},
+  salvateur:{n:"Salvateur",e:"🛡️",d:"Chaque nuit, tu protèges un joueur (toi compris) de l'attaque des loups. Jamais le même deux nuits de suite."},
+  ancien:{n:"Ancien",e:"🧓",d:"Les loups doivent t'attaquer deux fois pour te tuer. Mais le vote, le poison ou le tir du Chasseur te tuent d'un coup, et les villageois perdent alors leurs pouvoirs."},
   idiot:{n:"Idiot du village",e:"🤪",d:"Si le village vote contre toi, ton rôle est révélé et tu restes en vie, mais tu ne votes plus."},
   corbeau:{n:"Corbeau",e:"🐦",d:"Chaque nuit, tu peux désigner un joueur : il aura 2 voix contre lui au prochain vote."},
   villageois:{n:"Villageois",e:"🧑‍🌾",d:"Pas de pouvoir : trouve les loups et vote bien."}
@@ -223,6 +223,7 @@ async function onHostRaw(me,txt){
 }
 function playerAct(id,m){
   if(m.t==="vote")castVote(id,m.target);
+  if(m.t==="shoot"&&(H.hunts||[])[0]===id)doShoot(m.name);
   if(m.t==="tiebreak"&&id===H.mayor&&mayorAlive()){const tie=tieLeaders();if(tie&&tie.includes(m.name)){H.vote.tieChoice=m.name;changed()}}
   if(m.t==="succ"&&H.succ&&id===H.mayor&&inPlay().some(x=>x.name===m.name))setMayor(m.name);
 }
@@ -230,7 +231,7 @@ function mayorAlive(){return !!(H.mayor&&!H.succ&&H.players.some(p=>p.id===H.may
 const isMayor=p=>H.mayor===p.id&&!H.succ;
 const mtag=p=>isMayor(p)?" 🎖️":"";
 function setMayor(name){const p=H.players.find(x=>x.name===name&&x.alive);if(!p)return;H.mayor=p.id;H.succ=false;hostNote="🎖️ "+p.name+" est le nouveau Maire.";if(H.vote&&H.vote.kind==="mayor"){H.lastResult={kind:"mayor",list:tally(),out:p.name};H.vote=null}changed()}
-function voteOptions(p){return inPlay().filter(x=>x.id!==p.id)}
+function voteOptions(p){const o=H.vote&&H.vote.only;return inPlay().filter(x=>x.id!==p.id&&(!o||o.includes(x.name)))}
 function tieLeaders(){const v=H.vote;if(!v||v.open||v.kind==="mayor")return null;const r=tally();if(r.length<2||r[0].n!==r[1].n)return null;return r.filter(x=>x.n===r[0].n).map(x=>x.name)}
 function online(id){const c=conns[id];return !!(c&&Date.now()-c.seen<35000)}
 const inPlay=()=>H.players.filter(p=>p.role&&p.alive);
@@ -255,6 +256,8 @@ function stateFor(p){
   const v=H.vote;
   return {t:"state",phase:H.phase,count:H.players.length,name:p.name,
     role:inGame?p.role:null,alive:p.alive||!!p.pending,revealed:!!p.revealed,
+    hunt:inGame&&(H.hunts||[])[0]===p.id?inPlay().filter(x=>x.id!==p.id).map(x=>x.name):null,
+    hunting:inGame&&(H.hunts||[]).length>0,
     deaths:H.phase==="game"?H.deaths.map(d=>({id:d.id,name:d.name,role:d.role,by:d.by,me:d.pid===p.id})):[],
     result:inGame&&H.result?{id:H.result.id,w:H.result.w,win:wins(H.result.w,p)}:null,
     lover:inGame&&p.lover?H.players.filter(x=>x.lover&&x.id!==p.id).map(x=>x.name):[],
@@ -278,7 +281,7 @@ async function sendTo(id,msg){
 function broadcast(){H.players.forEach(p=>sendTo(p.id,stateFor(p)))}
 const WIN={
   village:{e:"🏡",t:"Tous les loups-garous sont morts : le village a gagné."},
-  loups:{e:"🐺",t:"Les loups-garous sont aussi nombreux que les villageois : les loups-garous ont gagné."},
+  loups:{e:"🐺",t:"Tous les villageois sont morts : les loups-garous ont gagné."},
   amoureux:{e:"💘",t:"Les amoureux sont les derniers survivants : ils ont gagné."}
 };
 function verdictKey(){
@@ -286,7 +289,7 @@ function verdictKey(){
   if(!H.players.some(p=>p.role))return null;
   if(al.length===2&&al.every(p=>p.lover))return "amoureux";
   if(w===0)return "village";
-  if(w>=al.length-w)return "loups";
+  if(w===al.length)return "loups";
   return null;
 }
 const wins=(k,p)=>k==="amoureux"?!!p.lover:k==="loups"?p.role==="loup":p.role!=="loup";
@@ -294,14 +297,26 @@ function checkResult(){
   if(H.phase!=="game"){H.result=null;return}
   const k=verdictKey();
   if(!k){H.result=null;return}
-  if(H.players.some(p=>p.pending))return;
+  if(H.players.some(p=>p.pending)||(H.hunts||[]).length)return;
   if(!H.result||H.result.w!==k)H.result={id:rid(),w:k};
 }
 function announce(){
-  H.players.filter(p=>p.pending).forEach(p=>{p.pending=false;H.deaths.push({id:rid(),pid:p.id,name:p.name,role:p.role,by:p.deathBy||""})});
+  H.hunts=H.hunts||[];
+  H.players.filter(p=>p.pending).forEach(p=>{
+    p.pending=false;H.deaths.push({id:rid(),pid:p.id,name:p.name,role:p.role,by:p.deathBy||""});
+    if(p.role==="chasseur"&&!p.shot&&!H.hunts.includes(p.id))H.hunts.push(p.id);
+  });
+}
+function doShoot(name){
+  const hid=(H.hunts||[])[0],h=H.players.find(x=>x.id===hid),t=H.players.find(x=>x.name===name&&x.alive&&x.role);
+  if(!h||!t||t.id===hid)return;
+  h.shot=true;H.hunts.shift();
+  hostNote="🏹 "+h.name+" (Chasseur) a tiré sur "+t.name+". "+kill(t,"chasseur");
+  announce();changed();
 }
 function changed(){
   if(!H)return;
+  H.hunts=(H.hunts||[]).filter(id=>H.players.some(p=>p.id===id&&!p.alive&&!p.shot));
   if(!H.custom)H.comp=suggest(H.players.length);
   checkResult();
   saveHost();renderHost();broadcast();
@@ -371,6 +386,7 @@ function renderHost(){
       ${H.night?`<ol class="steps">${nightSteps().map(s=>`<li>${s}</li>`).join("")}</ol>`:`<p class="mut" style="margin-top:0">Quand tout le monde a vu son rôle, lance la première nuit : je t'affiche l'ordre des réveils.</p>`}
       <button class="pri full" style="margin-top:10px" data-a="night">🌙 ${H.night?"Nuit suivante":"Commencer la nuit 1"}</button>
     </div>
+    ${huntCard()}
     ${succCard()}
     ${timerCard()}
     ${voteCard()}
@@ -406,6 +422,13 @@ function timerCard(){
     <div class="btns">${t.running?`<button class="pri" data-a="tpause">⏸ Pause</button>`:`<button class="pri" data-a="tstart">▶ ${left<t.dur&&left>0?"Reprendre":"Démarrer"}</button>`}<button data-a="treset">↺ Remettre à zéro</button></div>
     <div class="mut" style="margin-top:8px">Le minuteur s'affiche aussi sur le téléphone des joueurs.</div></div>`;
 }
+function huntCard(){
+  const hid=(H.hunts||[])[0];if(!hid)return "";
+  const h=H.players.find(p=>p.id===hid);if(!h)return "";
+  return `<h2>🏹 Le Chasseur tire</h2><div class="card" style="border-color:var(--acc)">
+    <p style="margin-top:0">${esc(h.name)} était Chasseur : il choisit${h.bot?"":" sur son téléphone"} qui il emporte avec lui, ou tu le désignes ici.</p>
+    <div class="btns">${inPlay().map(p=>`<button class="sm" data-a="shoot" data-host="1" data-name="${esc(p.name)}">${esc(p.name)}</button>`).join("")}</div></div>`;
+}
 function succCard(){
   if(!H.succ)return "";
   const m=H.players.find(p=>p.id===H.mayor);if(!m)return "";
@@ -435,14 +458,14 @@ function voteCard(){
   if(v.kind==="mayor")return `<h2>🎖️ Résultat de l'élection</h2><div class="card">
     <p class="mut" style="margin-top:0">Toi seul vois ce résultat. Les joueurs le verront quand tu auras confirmé.</p>
     ${r.length?`<ul class="list">${r.map(x=>`<li><span class="grow">${esc(x.name)}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}
-    ${leaders.length>1?`<div class="note">Égalité : relance l'élection ou choisis parmi les ex æquo.</div>`:""}
-    <div class="btns">${leaders.map(x=>`<button class="pri" data-a="mnom" data-name="${esc(x.name)}">✅ Confirmer : ${esc(x.name)} Maire</button>`).join("")}<button data-a="vagain">Revoter</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
+    ${leaders.length>1?`<div class="note">Égalité : on revote entre les ex æquo. Si l'égalité persiste, il n'y a pas de Maire.</div>`:""}
+    <div class="btns">${leaders.length>1?`<button class="pri" data-a="vrevote">Revoter entre ${leaders.map(x=>esc(x.name)).join(" et ")}</button>`:""}${leaders.map(x=>`<button class="pri" data-a="mnom" data-name="${esc(x.name)}">✅ Confirmer : ${esc(x.name)} Maire</button>`).join("")}<button data-a="vagain">Revoter</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
   const tie=leaders.length>1,ma=mayorAlive(),mname=ma?H.players.find(p=>p.id===H.mayor).name:"";
   return `<h2>🗳 Résultat du vote</h2><div class="card">
     <p class="mut" style="margin-top:0">Toi seul vois ce résultat. Les joueurs le verront quand tu auras confirmé.</p>
     ${r.length?`<ul class="list">${r.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}
-    ${tie?`<div class="note">Égalité entre ${leaders.map(x=>esc(x.name)).join(" et ")}. ${ma?(v.tieChoice?`🎖️ Le Maire ${esc(mname)} a choisi : <b>${esc(v.tieChoice)}</b>.`:`🎖️ Le Maire ${esc(mname)} tranche sur son téléphone…`):"Relance un vote ou tranche selon vos règles."}</div>`:""}
-    <div class="btns">${(tie?(v.tieChoice?[v.tieChoice]:leaders.map(x=>x.name)):[leaders[0]&&leaders[0].name]).filter(Boolean).map(n=>`<button class="pri" data-a="vkill" data-name="${esc(n)}">✅ Confirmer : éliminer ${esc(n)}</button>`).join("")}<button data-a="vagain">Nouveau vote</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
+    ${tie?`<div class="note">Égalité entre ${leaders.map(x=>esc(x.name)).join(" et ")}. ${ma?(v.tieChoice?`🎖️ Le Maire ${esc(mname)} a choisi : <b>${esc(v.tieChoice)}</b>.`:`🎖️ Le Maire ${esc(mname)} tranche sur son téléphone…`):v.only?"Toujours à égalité : personne n'est éliminé.":"Sans Maire, on revote entre les ex æquo. Si l'égalité persiste, personne n'est éliminé."}</div>`:""}
+    <div class="btns">${tie&&!ma?(v.only?`<button class="pri" data-a="vnone">✅ Confirmer : personne n'est éliminé</button>`:`<button class="pri" data-a="vrevote">Revoter entre ${leaders.map(x=>esc(x.name)).join(" et ")}</button><button data-a="vnone">Personne n'est éliminé</button>`):""}${(tie?(ma?(v.tieChoice?[v.tieChoice]:leaders.map(x=>x.name)):[]):[leaders[0]&&leaders[0].name]).filter(Boolean).map(n=>`<button class="pri" data-a="vkill" data-name="${esc(n)}">✅ Confirmer : éliminer ${esc(n)}</button>`).join("")}<button data-a="vagain">Nouveau vote</button><button class="sm" data-a="vdone">Fermer</button></div></div>`;
 }
 actions.share=()=>{
   const url=joinUrl(H.code);
@@ -476,8 +499,8 @@ actions.deal=()=>{
   if(total(c)!==n){hostErr="La composition doit avoir exactement "+n+" rôles (actuellement "+total(c)+").";return renderHost()}
   if(!c.loup){hostErr="Il faut au moins un Loup-Garou.";return renderHost()}
   const deck=shuffle(ORDER.flatMap(k=>Array(c[k]).fill(k)));
-  H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false;p.revealed=false;p.pending=false});
-  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;H.deaths=[];H.result=null;H.lastResult=null;
+  H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false;p.revealed=false;p.pending=false;p.shot=false;p.ancienHit=false});
+  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;H.deaths=[];H.result=null;H.lastResult=null;H.hunts=[];
   H.phase="game";H.night=0;H.showQR=false;hostNote="";changed();
 };
 actions.give=d=>{
@@ -489,22 +512,24 @@ actions.love=d=>{
   if(!p.lover&&H.players.filter(x=>x.lover).length>=2){hostErr="Il y a déjà deux amoureux. Retire d'abord un cœur.";return renderHost()}
   p.lover=!p.lover;hostNote="";changed();
 };
-function kill(p,byVote){
+function kill(p,how){
+  const byVote=how===true||how==="vote",by=how===true?"vote":how||"";
   const notes=[];
   const one=(x,by)=>{
     x.alive=false;x.pending=true;x.deathBy=by;
     if(x.id===H.mayor&&!H.succ){H.succ=true;notes.push("🎖️ "+x.name+" était Maire : il désigne son successeur.")}
-    if(x.role==="chasseur")notes.push("🏹 "+x.name+" était Chasseur : il élimine immédiatement un joueur.");
-    if(x.role==="ancien")notes.push(byVote?"🧓 Le village a éliminé l'Ancien : les villageois perdent leurs pouvoirs.":"🧓 Si c'est la première attaque des loups contre l'Ancien, il survit : appuie sur ↩︎.");
+    if(x.role==="chasseur"&&!x.shot)notes.push("🏹 "+x.name+" était Chasseur : il tirera sur un joueur dès que sa mort sera annoncée.");
+    if(x.role==="ancien")notes.push(byVote||by==="chasseur"?"🧓 L'Ancien a été tué par le village : les villageois perdent leurs pouvoirs.":"🧓 Si l'Ancien a été tué par le poison de la Sorcière, les villageois perdent leurs pouvoirs.");
   };
-  one(p,byVote?"vote":"");
+  one(p,by);
   if(p.lover){const o=H.players.find(x=>x.lover&&x.id!==p.id&&x.alive);if(o){one(o,"chagrin");notes.splice(0,0,"💘 "+o.name+" meurt de chagrin.")}}
   return notes.join(" ");
 }
 actions.life=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
   hostNote="";
-  if(p.alive)hostNote=kill(p,false);else{p.alive=true;p.pending=false;H.deaths=H.deaths.filter(x=>x.pid!==p.id);if(H.succ&&H.mayor===p.id)H.succ=false}
+  if(p.alive&&p.role==="ancien"&&!p.ancienHit&&confirm("L'Ancien est-il attaqué par les loups-garous ?\n\nOK : c'est leur 1re attaque, il survit.\nAnnuler : il meurt (poison, 2e attaque…).")){p.ancienHit=true;hostNote="🧓 L'Ancien survit à cette première attaque des loups. Personne n'est prévenu.";changed();return}
+  if(p.alive)hostNote=kill(p,"");else{p.alive=true;p.pending=false;p.shot=false;H.deaths=H.deaths.filter(x=>x.pid!==p.id);if(H.succ&&H.mayor===p.id)H.succ=false}
   changed();
 };
 actions.tset=d=>{H.timer=newTimer(+d.m*60000);changed()};
@@ -516,6 +541,7 @@ actions.vmayor=()=>{
   H.vote={kind:"mayor",open:true,votes:{}};H.lastResult=null;hostNote="";changed();
 };
 actions.mnom=d=>setMayor(d.name);
+actions.shoot=d=>{if(P||(H&&H.preview&&(H.hunts||[])[0]===H.preview&&!d.host))pSend({t:"shoot",name:d.name});else doShoot(d.name)};
 actions.vopen=()=>{
   const c=$("#crow");
   if(H.players.filter(canVote).length<2){hostErr="Il faut au moins 2 joueurs qui peuvent voter.";return renderHost()}
@@ -530,6 +556,8 @@ actions.vbots=()=>{
 actions.vclose=()=>{H.vote.open=false;changed()};
 actions.vcancel=()=>{H.vote=null;changed()};
 actions.vagain=()=>{H.vote={kind:H.vote.kind,open:true,votes:{},crow:H.vote.crow};changed()};
+actions.vrevote=()=>{const r=tally(),top=r.length?r[0].n:0;H.vote={kind:H.vote.kind,open:true,votes:{},crow:H.vote.crow,only:r.filter(x=>x.n===top).map(x=>x.name)};changed()};
+actions.vnone=()=>{H.lastResult={kind:H.vote.kind,list:tally(),out:null,none:true};H.vote=null;hostNote=H.lastResult.kind==="mayor"?"Pas de Maire élu.":"Égalité : personne n'est éliminé.";changed()};
 actions.vdone=()=>{H.vote=null;changed()};
 actions.vkill=d=>{
   const p=H.players.find(x=>x.name===d.name&&x.alive);if(!p)return;
@@ -562,8 +590,8 @@ function beep(){try{const a=new (window.AudioContext||window.webkitAudioContext)
 actions.night=()=>{H.night++;hostNote="";changed();window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"})};
 actions.again=()=>{
   if(!confirm("Relancer une partie avec les mêmes joueurs ?"))return;
-  H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false;p.revealed=false;p.pending=false});
-  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;H.deaths=[];H.result=null;H.lastResult=null;
+  H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false;p.revealed=false;p.pending=false;p.shot=false;p.ancienHit=false});
+  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;H.deaths=[];H.result=null;H.lastResult=null;H.hunts=[];
   H.phase="lobby";H.night=0;H.showQR=true;hostNote="";changed();
 };
 actions.end=()=>{
@@ -670,10 +698,13 @@ function playerBody(s){
   } else if(v&&v.closed){
     day+=`<div class="card"><b>${v.kind==="mayor"?"🎖️ Élection terminée":"🗳 Vote terminé"}</b><p class="mut" style="margin-bottom:0">Le meneur dépouille les votes et va confirmer le résultat…</p></div>`;
   } else if(s.last){const L=s.last;
-    day+=`<div class="card"><b>${L.kind==="mayor"?"🎖️ Résultat de l'élection":"🗳 Résultat du vote"}</b><p class="mut" style="margin:4px 0 0">Confirmé par le meneur : ${esc(L.out)} ${L.kind==="mayor"?"est élu Maire":L.idiot?"est désigné, mais c'était l'Idiot du village : il reste en vie":"est éliminé"}.</p>${L.list.length?`<ul class="list">${L.list.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}</div>`;
+    day+=`<div class="card"><b>${L.kind==="mayor"?"🎖️ Résultat de l'élection":"🗳 Résultat du vote"}</b><p class="mut" style="margin:4px 0 0">${L.none?(L.kind==="mayor"?"Égalité : pas de Maire élu.":"Égalité : personne n'est éliminé."):`Confirmé par le meneur : ${esc(L.out)} `+(L.kind==="mayor"?"est élu Maire":L.idiot?"est désigné, mais c'était l'Idiot du village : il reste en vie":"est éliminé")+"."}</p>${L.list.length?`<ul class="list">${L.list.map(x=>`<li><span class="grow">${esc(x.name)}${x.crow?" 🐦":""}</span><b>${x.n} voix</b></li>`).join("")}</ul>`:`<p class="mut">Personne n'a voté.</p>`}</div>`;
   }
   if(s.tie)day+=`<div class="card" style="border-color:var(--acc)"><b>🎖️ Égalité : c'est toi qui tranches</b><p class="mut">En tant que Maire, choisis qui est éliminé.</p>
     <div class="btns">${s.tie.map(n=>`<button class="${v&&v.tieChoice===n?"pri":""}" data-a="tiebreak" data-name="${esc(n)}">${v&&v.tieChoice===n?"✓ ":""}${esc(n)}</button>`).join("")}</div></div>`;
+  if(s.hunting&&!s.hunt)day=`<div class="note">🏹 Le Chasseur choisit sur qui il tire…</div>`+day;
+  if(s.hunt)day=`<div class="card" style="border-color:var(--acc)"><b>🏹 Tu es le Chasseur : tire !</b><p class="mut">Avant de mourir, choisis le joueur que tu emportes avec toi. Ce choix est définitif.</p>
+    <div class="btns">${s.hunt.map(n=>`<button data-a="shoot" data-name="${esc(n)}">${esc(n)}</button>`).join("")}</div></div>`+day;
   if(s.succ)day=`<div class="card" style="border-color:var(--acc)"><b>🎖️ Désigne ton successeur</b><p class="mut">Tu étais Maire : choisis qui reprend ton titre.</p>
     <div class="btns">${s.succ.map(n=>`<button data-a="succ" data-name="${esc(n)}">${esc(n)}</button>`).join("")}</div></div>`+day;
   if(s.mayor&&!s.isMayor)day=`<p class="mut" style="margin:0 0 4px">🎖️ Maire : <b>${esc(s.mayor)}</b></p>`+day;
@@ -724,8 +755,8 @@ function showPopup(s){
   const ev=evs.find(e=>!seen.includes(e.id));if(!ev)return;
   let html;
   if(ev.d){const d=ev.d,r=ROLES[d.role];
-    html=`<div class="pbox lose"><div class="mut">${d.by==="vote"?"Le village a voté":"Annonce du meneur"}</div><div class="big">${r.e}</div>
-      <h2>${d.me?"Tu es mort":esc(d.name)+(d.by==="vote"?" a été éliminé":d.by==="chagrin"?" est mort de chagrin":" est mort")}</h2>
+    html=`<div class="pbox lose"><div class="mut">${d.by==="vote"?"Le village a voté":d.by==="chasseur"?"Tir du Chasseur":"Annonce du meneur"}</div><div class="big">${r.e}</div>
+      <h2>${d.me?"Tu es mort":esc(d.name)+(d.by==="vote"?" a été éliminé":d.by==="chagrin"?" est mort de chagrin":d.by==="chasseur"?" a été abattu par le Chasseur":" est mort")}</h2>
       <p style="font-size:18px;margin:0">${d.me?"Tu étais":"C'était"} <b>${r.n}</b></p>
       ${d.me?`<p class="mut">Garde le silence jusqu'à la fin de la partie.</p>`:""}`;
   }else{const r=ev.r,w=WIN[r.w];
