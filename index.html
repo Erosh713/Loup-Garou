@@ -54,7 +54,7 @@ details summary{cursor:pointer}
 </head>
 <body>
 <main id="app"></main>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.15.2/dist/mqtt.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 const ROLES={
@@ -77,12 +77,17 @@ const ibtn=k=>`<button class="sm i" data-a="info" data-k="${esc(k)}" aria-label=
 const iline=(k,txt)=>infoOpen===k?`<li class="info">${txt}</li>`:"";
 const fmt=ms=>{const s=Math.max(0,Math.ceil(ms/1000));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")};
 const newTimer=d=>({dur:d||180000,left:d||180000,running:false,endsAt:0});
-const PREFIX="lgthiercelieux-v1-";
-const PEER_OPTS={config:{iceServers:[
-  {urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},
-  {urls:"stun:stun.cloudflare.com:3478"},
-  {urls:["turn:eu-0.turn.peerjs.com:3478","turn:us-0.turn.peerjs.com:3478"],username:"peerjs",credential:"peerjsp"}
-]}};
+const BROKERS=["wss://broker.emqx.io:8084/mqtt","wss://broker.hivemq.com:8884/mqtt","wss://test.mosquitto.org:8081/mqtt"];
+const TOPIC=code=>"lgthiercelieux/v2/"+code;
+const enc=new TextEncoder(),dec=new TextDecoder();
+const b64=buf=>{const a=new Uint8Array(buf);let s="";for(let i=0;i<a.length;i++)s+=String.fromCharCode(a[i]);return btoa(s)};
+const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+const ECDH={name:"ECDH",namedCurve:"P-256"};
+const genKeys=()=>crypto.subtle.generateKey(ECDH,true,["deriveKey"]);
+const exportPub=async k=>b64(await crypto.subtle.exportKey("raw",k.publicKey));
+async function derive(priv,pubB64){const pub=await crypto.subtle.importKey("raw",unb64(pubB64),ECDH,false,[]);return crypto.subtle.deriveKey({name:"ECDH",public:pub},priv,{name:"AES-GCM",length:256},false,["encrypt","decrypt"])}
+async function seal(key,obj){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,enc.encode(JSON.stringify(obj)));return {iv:b64(iv),ct:b64(ct)}}
+async function unseal(key,box){return JSON.parse(dec.decode(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(box.iv)},key,unb64(box.ct))))}
 const app=document.getElementById("app");
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -107,9 +112,17 @@ function suggest(n){
   return c;
 }
 
-let peer=null,timer=null;
+let nets=[],timer=null,pingT=null;
 function schedule(fn,ms){clearTimeout(timer);timer=setTimeout(fn,ms)}
-function killPeer(){clearTimeout(timer);if(peer){try{peer.destroy()}catch(e){}}peer=null}
+function killPeer(){clearTimeout(timer);clearInterval(pingT);pingT=null;nets.forEach(c=>{try{c.end(true)}catch(e){}});nets=[]}
+function mq(url,onConnect,onMsg,onState){
+  const c=mqtt.connect(url,{clientId:"lg"+rid().slice(0,14),clean:true,reconnectPeriod:2000,connectTimeout:8000,keepalive:20,protocolVersion:4});
+  c.on("connect",()=>onConnect(c));
+  c.on("message",(t,pl)=>onMsg(t,typeof pl==="string"?pl:dec.decode(pl)));
+  ["offline","close","reconnect"].forEach(e=>c.on(e,()=>onState()));
+  c.on("error",()=>{});
+  return c;
+}
 
 const actions={};
 actions.info=d=>{infoOpen=infoOpen===d.k?null:d.k;if(H)renderHost();else if(P)renderPlayer()};
@@ -155,45 +168,49 @@ function startHost(restore){
   H.timer=H.timer||newTimer();H.vote=H.vote||null;
   conns={};pending={};hostErr="";hostNote="";
   history.replaceState(null,"",baseUrl());
-  openHostPeer();
+  openHostNet();
   renderHost();
 }
 function saveHost(){if(!H)return;const {showQR,preview,...rest}=H;store("lg-host",rest)}
-function openHostPeer(){
+let hostKeys=null,hostPub="",hostSess="",peerKeys={},hostEver=false,seq=0;
+async function openHostNet(){
   killPeer();
-  hostStatus="Connexion au réseau…";
-  const p=new Peer(PREFIX+H.code,PEER_OPTS);peer=p;
-  p.on("open",()=>{if(peer!==p)return;hostStatus="";saveHost();renderHost()});
-  p.on("connection",c=>{
-    c.on("data",m=>onHostMsg(c,m));
-    c.on("close",()=>{for(const id in conns)if(conns[id]===c)delete conns[id];if(H)renderHost()});
-  });
-  p.on("disconnected",()=>{if(peer!==p)return;hostStatus="Reconnexion…";renderHost();schedule(()=>{try{p.reconnect()}catch(e){}},1500)});
-  p.on("error",err=>{
-    if(peer!==p)return;
-    if(err.type==="unavailable-id"){
-      if(H.phase==="lobby"&&H.players.length===0){H.code=newCode();openHostPeer();renderHost();return}
-      hostStatus="Le code est encore réservé, nouvel essai dans quelques secondes…";
-      renderHost();schedule(openHostPeer,3000);return;
-    }
-    if(err.type==="peer-unavailable")return;
-    hostStatus="Problème réseau, nouvel essai…";renderHost();schedule(openHostPeer,3000);
-  });
+  hostStatus="Connexion au serveur…";hostEver=false;peerKeys={};
+  const me=H;
+  hostKeys=await genKeys();hostPub=await exportPub(hostKeys);hostSess=rid();
+  if(H!==me)return;
+  const T=TOPIC(H.code);
+  const onState=()=>{if(H!==me)return;const st=nets.some(c=>c.connected)?"":hostEver?"Connexion perdue, reconnexion…":"Connexion au serveur…";if(st!==hostStatus){hostStatus=st;renderHost()}};
+  nets=BROKERS.map(u=>mq(u,c=>{
+    if(H!==me)return;
+    hostEver=true;
+    c.subscribe(T+"/in",{qos:1});
+    c.publish(T+"/host",JSON.stringify({pub:hostPub,s:hostSess}),{qos:1,retain:true});
+    onState();saveHost();
+  },(t,txt)=>onHostRaw(me,txt),onState));
 }
-function onHostMsg(c,m){
-  if(!H||!m||typeof m!=="object")return;
-  if(m.t==="hello"&&typeof m.id==="string"&&m.id.length<64){
-    let name=String(m.name||"").trim().slice(0,20)||"Joueur";
-    let p=H.players.find(x=>x.id===m.id);
-    const taken=n=>H.players.some(x=>x.id!==m.id&&x.name.toLowerCase()===n.toLowerCase());
+async function onHostRaw(me,txt){
+  if(!H||H!==me||!txt)return;
+  let m;try{m=JSON.parse(txt)}catch(e){return}
+  if(!m||typeof m.pid!=="string"||m.pid.length>40||typeof m.pub!=="string"||m.pub.length>200)return;
+  let k=peerKeys[m.pid];
+  if(!k||k.pub!==m.pub){k={pub:m.pub,key:derive(hostKeys.privateKey,m.pub)};peerKeys[m.pid]=k}
+  let msg;try{msg=await unseal(await k.key,m)}catch(e){return}
+  if(H!==me||!msg||typeof msg!=="object"||typeof msg.id!=="string"||msg.id.length>=64)return;
+  if(msg.t==="hello"){
+    let name=String(msg.name||"").trim().slice(0,20)||"Joueur";
+    let p=H.players.find(x=>x.id===msg.id);
+    const taken=n=>H.players.some(x=>x.id!==msg.id&&x.name.toLowerCase()===n.toLowerCase());
     if(taken(name)){let i=2;while(taken(name+" "+i))i++;name=name+" "+i}
-    if(!p){p={id:m.id,name,role:null,alive:true,lover:false};H.players.push(p)}
+    if(!p){p={id:msg.id,name,role:null,alive:true,lover:false};H.players.push(p)}
     else p.name=name;
-    if(conns[m.id]&&conns[m.id]!==c){try{conns[m.id].close()}catch(e){}}
-    conns[m.id]=c;
-    changed();
+    conns[msg.id]={pid:m.pid,key:k.key,seen:Date.now()};
+    changed();return;
   }
-  if(conns[m.id]===c)playerAct(m.id,m);
+  const c=conns[msg.id];if(!c||c.pid!==m.pid)return;
+  const was=online(msg.id);c.seen=Date.now();
+  if(msg.t==="ping"){if(!was)renderHost();return}
+  playerAct(msg.id,msg);
 }
 function playerAct(id,m){
   if(m.t==="vote")castVote(id,m.target);
@@ -206,7 +223,7 @@ const mtag=p=>isMayor(p)?" 🎖️":"";
 function setMayor(name){const p=H.players.find(x=>x.name===name&&x.alive);if(!p)return;H.mayor=p.id;H.succ=false;hostNote="🎖️ "+p.name+" est le nouveau Maire.";if(H.vote&&H.vote.kind==="mayor")H.vote=null;changed()}
 function voteOptions(p){return H.vote&&H.vote.kind==="mayor"?inPlay():inPlay().filter(x=>x.id!==p.id)}
 function tieLeaders(){const v=H.vote;if(!v||v.open||v.kind==="mayor")return null;const r=tally();if(r.length<2||r[0].n!==r[1].n)return null;return r.filter(x=>x.n===r[0].n).map(x=>x.name)}
-function online(id){const c=conns[id];return !!(c&&c.open)}
+function online(id){const c=conns[id];return !!(c&&Date.now()-c.seen<35000)}
 const inPlay=()=>H.players.filter(p=>p.role&&p.alive);
 const canVote=p=>p.role&&p.alive&&!p.revealed;
 function castVote(voterId,target){
@@ -239,7 +256,12 @@ function stateFor(p){
       mine:v.votes[p.id]||null,canVote:canVote(p),count:Object.keys(v.votes).length,
       total:H.players.filter(canVote).length,results:v.open?null:tally()}:null};
 }
-function sendTo(id,msg){const c=conns[id];if(c&&c.open){try{c.send(msg)}catch(e){}}}
+async function sendTo(id,msg){
+  const c=conns[id];if(!c||!H)return;
+  const T=TOPIC(H.code)+"/out/"+c.pid,targets=nets.slice();
+  msg.q=++seq;msg.s=hostSess;
+  try{const pl=JSON.stringify(await seal(await c.key,msg));targets.forEach(n=>{if(n.connected)n.publish(T,pl,{qos:1})})}catch(e){}
+}
 function broadcast(){H.players.forEach(p=>sendTo(p.id,stateFor(p)))}
 function changed(){
   if(!H)return;
@@ -393,7 +415,7 @@ actions.auto=()=>{H.custom=false;changed()};
 actions.kick=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p||(!p.bot&&!confirm("Retirer "+p.name+" de la partie ?")))return;
   sendTo(p.id,{t:"kicked"});
-  const c=conns[p.id];delete conns[p.id];setTimeout(()=>{try{c&&c.close()}catch(e){}},400);
+  delete conns[p.id];
   H.players=H.players.filter(x=>x.id!==p.id);changed();
 };
 actions.deal=()=>{
@@ -464,7 +486,7 @@ actions.vkill=d=>{
   H.vote=null;changed();
 };
 function pSend(m){
-  if(P&&P.conn&&P.conn.open){P.conn.send({...m,id:P.id});return}
+  if(P){pSendRaw(m);return}
   if(H&&H.preview)playerAct(H.preview,m);
 }
 actions.vote=d=>pSend({t:"vote",target:d.name});
@@ -493,7 +515,8 @@ actions.end=()=>{
   if(!confirm("Terminer la partie pour tout le monde ?"))return;
   H.players.forEach(p=>sendTo(p.id,{t:"ended"}));
   unstore("lg-host");
-  setTimeout(()=>{killPeer();home()},400);
+  const T=TOPIC(H.code);
+  setTimeout(()=>{nets.forEach(c=>{if(c.connected)c.publish(T+"/host","",{qos:1,retain:true})});setTimeout(()=>{killPeer();home()},500)},400);
 };
 actions.homeh=()=>{killPeer();home()};
 actions.bot=()=>{
@@ -525,45 +548,54 @@ actions.go=d=>{
   if(!name){$("#err").textContent="Entre ton prénom pour que le meneur te reconnaisse.";return}
   startPlayer(d.code,name);
 };
-function startPlayer(code,name){
+async function startPlayer(code,name){
   killPeer();
   const saved=load("lg-player")||{};
   const id=saved.id||rid();
   store("lg-player",{id,name,code});
   history.replaceState(null,"",baseUrl()+"?p="+code);
-  P={code,name,id,state:null,status:"Étape 1/2 : connexion au serveur…",conn:null,over:"",t0:Date.now()};
-  const p=new Peer(PEER_OPTS);peer=p;
-  p.on("open",()=>{if(peer===p)pConnect()});
-  p.on("disconnected",()=>{if(peer===p)schedule(()=>{try{p.reconnect()}catch(e){}},1500)});
-  p.on("error",err=>{
-    if(peer!==p||!P)return;
-    P.status=err.type==="peer-unavailable"
-      ?"Partie introuvable. Vérifie le code et que le meneur a bien l'app ouverte. Nouvel essai…"
-      :"Problème de connexion, nouvel essai…";
-    renderPlayer();schedule(pRetry,3000);
-  });
-  renderPlayer();
+  const me={code,name,id,state:null,status:"Étape 1/2 : connexion au serveur…",over:"",t0:Date.now(),pid:rid(),key:null,hostPub:"",lastQ:0,sess:""};
+  P=me;renderPlayer();
+  me.keys=await genKeys();me.pub=await exportPub(me.keys);
+  if(P!==me)return;
+  const T=TOPIC(code);let chosen=null;
+  const onState=()=>{if(P!==me||me.over)return;if(!nets.some(c=>c.connected)&&me.state&&!me.status){me.status="Connexion perdue, reconnexion…";me.t0=Date.now();renderPlayer()}};
+  nets=BROKERS.map(u=>mq(u,c=>{
+    if(P!==me)return;
+    if(!chosen){chosen=c;nets.filter(x=>x!==c).forEach(x=>{try{x.end(true)}catch(e){}});nets=[c]}
+    if(c!==chosen)return;
+    c.subscribe([T+"/host",T+"/out/"+me.pid],{qos:1});
+    if(!me.state){me.status="Étape 2/2 : recherche de la partie…";renderPlayer()}
+    clearTimeout(me.lostT);
+    me.lostT=setTimeout(()=>{if(P===me&&!me.state&&!me.over){me.status="Partie introuvable pour l'instant. Vérifie le code et que le meneur a l'app ouverte. J'attends…";renderPlayer()}},8000);
+    if(me.key)pHello();
+  },(t,txt)=>onPlayerRaw(me,t,txt),onState));
+  clearInterval(pingT);pingT=setInterval(()=>{if(P===me&&me.key)pSendRaw({t:"ping"})},10000);
 }
-function pRetry(){
-  if(!P||P.over||!peer)return;
-  if(P.conn&&P.conn.open)return;
-  if(peer.destroyed){startPlayer(P.code,P.name);return}
-  if(peer.disconnected){try{peer.reconnect()}catch(e){}schedule(pRetry,3000);return}
-  if(peer.open)pConnect();else schedule(pRetry,3000);
+async function onPlayerRaw(me,t,txt){
+  if(P!==me||me.over)return;
+  const T=TOPIC(me.code);
+  if(t===T+"/host"){
+    if(!txt)return;
+    let h;try{h=JSON.parse(txt)}catch(e){return}
+    if(!h||typeof h.pub!=="string")return;
+    if(h.pub!==me.hostPub){me.hostPub=h.pub;me.key=derive(me.keys.privateKey,h.pub)}
+    pHello();return;
+  }
+  if(!me.key)return;
+  let m;try{m=await unseal(await me.key,JSON.parse(txt))}catch(e){return}
+  if(P!==me||!m)return;
+  if(m.s!==me.sess){me.sess=m.s;me.lastQ=0}
+  if(m.q<=me.lastQ)return;me.lastQ=m.q;
+  if(m.t==="state"){clearTimeout(me.lostT);m._recv=Date.now();me.state=m;me.name=m.name;me.status="";me.t0=0;renderPlayer()}
+  else if(m.t==="kicked"){me.over="Le meneur t'a retiré de la partie.";killPeer();renderPlayer()}
+  else if(m.t==="ended"){me.over="La partie est terminée. Merci d'avoir joué !";killPeer();renderPlayer()}
 }
-function pConnect(){
-  if(!P)return;
-  if(!P.state){P.status="Étape 2/2 : connexion au téléphone du meneur…";renderPlayer()}
-  const c=peer.connect(PREFIX+P.code,{reliable:true,serialization:"json"});P.conn=c;
-  const to=setTimeout(()=>{if(P&&P.conn===c&&!c.open){try{c.close()}catch(e){}schedule(pRetry,200)}},25000);
-  c.on("open",()=>{clearTimeout(to);if(!P||P.conn!==c)return;P.status="";P.t0=0;c.send({t:"hello",id:P.id,name:P.name});renderPlayer()});
-  c.on("data",m=>{
-    if(!P||!m)return;
-    if(m.t==="state"){m._recv=Date.now();P.state=m;P.name=m.name;renderPlayer()}
-    else if(m.t==="kicked"){P.over="Le meneur t'a retiré de la partie.";killPeer();renderPlayer()}
-    else if(m.t==="ended"){P.over="La partie est terminée. Merci d'avoir joué !";killPeer();renderPlayer()}
-  });
-  c.on("close",()=>{if(P&&P.conn===c&&!P.over){P.status="Connexion perdue, reconnexion…";P.t0=Date.now();renderPlayer();schedule(pRetry,2000)}});
+function pHello(){pSendRaw({t:"hello",name:P.name})}
+async function pSendRaw(m){
+  const me=P;if(!me||!me.key)return;
+  const c=nets.find(x=>x.connected);if(!c)return;
+  try{const box=await seal(await me.key,{...m,id:me.id});box.pid=me.pid;box.pub=me.pub;c.publish(TOPIC(me.code)+"/in",JSON.stringify(box),{qos:1})}catch(e){}
 }
 function playerBody(s){
   if(!s.role)return `<div class="card"><p style="margin-top:0">Tu es dans la partie 👋</p><p class="mut" style="margin-bottom:0">${s.phase==="lobby"?"Attends que le meneur distribue les rôles.":"La partie a déjà commencé : le meneur va te donner un rôle."} ${s.count} joueur${s.count>1?"s":""} dans la partie.</p></div>`;
@@ -613,7 +645,7 @@ function renderPlayer(){
   if(!P)return;
   const s=P.state;let body="";
   if(P.over)body=`<div class="card">${esc(P.over)}</div>`;
-  else if(!s)body=`<div class="card mut">${esc(P.status||"Connexion…")} <span data-since="${P.t0||""}"></span><br><span style="font-size:13px">Sur réseau mobile, la première connexion peut prendre jusqu'à 20 secondes.</span></div>`;
+  else if(!s)body=`<div class="card mut">${esc(P.status||"Connexion…")} <span data-since="${P.t0||""}"></span></div>`;
   else body=playerBody(s);
   app.innerHTML=`<h1>🐺 ${esc(P.name)}</h1><p class="mut">Partie ${esc(P.code)}</p>
   ${P.status&&s&&!P.over?`<div class="status">${esc(P.status)}</div>`:""}
@@ -628,13 +660,15 @@ actions.leave=()=>{
 };
 
 document.addEventListener("visibilitychange",()=>{
-  if(document.hidden||!peer)return;
-  if(H&&peer.disconnected){try{peer.reconnect()}catch(e){}}
-  if(P&&!P.over&&!(P.conn&&P.conn.open))schedule(pRetry,200);
+  if(document.hidden)return;
+  nets.forEach(c=>{if(!c.connected){try{c.reconnect()}catch(e){}}});
+  if(P&&P.key&&!P.over)pHello();
 });
+let onlineSig="";
+setInterval(()=>{if(!H)return;const sig=H.players.map(p=>online(p.id)?1:0).join("");if(sig!==onlineSig){onlineSig=sig;renderHost()}},5000);
 
 (function boot(){
-  if(!window.Peer){app.innerHTML=`<h1>🐺 Loup-Garou</h1><div class="card">Impossible de charger le module de connexion. Vérifie ta connexion Internet puis recharge la page.</div>`;return}
+  if(!window.mqtt||!window.crypto||!crypto.subtle){app.innerHTML=`<h1>🐺 Loup-Garou</h1><div class="card">Impossible de charger le module de connexion. Vérifie ta connexion Internet puis recharge la page.</div>`;return}
   const code=(new URLSearchParams(location.search).get("p")||"").toUpperCase();
   if(/^[A-Z0-9]{4}$/.test(code))joinScreen(code,true);else home();
 })();
