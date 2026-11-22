@@ -54,6 +54,11 @@ details summary{cursor:pointer}
 .zoom{position:fixed;inset:0;z-index:50;background:#fff;color:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;cursor:zoom-out;padding:16px}
 .zoom .zc{font-size:52px;font-weight:700;letter-spacing:12px}
 .zoom .zh{font-size:15px;color:#555}
+.popup{position:fixed;inset:0;z-index:60;background:rgba(8,10,22,.93);display:flex;align-items:center;justify-content:center;padding:20px}
+.pbox{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 20px;text-align:center;max-width:420px;width:100%}
+.pbox .big{font-size:80px}
+.pbox h2{margin:10px 0 6px;font-size:24px}
+.pbox.win{border-color:var(--green)}.pbox.lose{border-color:var(--red)}
 </style>
 </head>
 <body>
@@ -169,7 +174,7 @@ function startHost(restore){
   P=null;
   H=restore||{code:newCode(),phase:"lobby",players:[],comp:suggest(0),custom:false,night:0};
   H.showQR=H.phase==="lobby";
-  H.timer=H.timer||newTimer();H.vote=H.vote||null;
+  H.timer=H.timer||newTimer();H.vote=H.vote||null;H.deaths=H.deaths||[];H.result=H.result||null;
   conns={};pending={};hostErr="";hostNote="";
   history.replaceState(null,"",baseUrl());
   openHostNet();
@@ -248,7 +253,9 @@ function stateFor(p){
   const inGame=H.phase==="game"&&p.role;
   const v=H.vote;
   return {t:"state",phase:H.phase,count:H.players.length,name:p.name,
-    role:inGame?p.role:null,alive:p.alive,revealed:!!p.revealed,
+    role:inGame?p.role:null,alive:p.alive||!!p.pending,revealed:!!p.revealed,
+    deaths:H.phase==="game"?H.deaths.map(d=>({id:d.id,name:d.name,role:d.role,by:d.by,me:d.pid===p.id})):[],
+    result:inGame&&H.result?{id:H.result.id,w:H.result.w,win:wins(H.result.w,p)}:null,
     lover:inGame&&p.lover?H.players.filter(x=>x.lover&&x.id!==p.id).map(x=>x.name):[],
     mates:inGame&&p.role==="loup"?H.players.filter(x=>x.role==="loup"&&x.id!==p.id).map(x=>x.name):[],
     timer:H.phase==="game"?{running:H.timer.running,remaining:timerLeft(),dur:H.timer.dur}:null,
@@ -267,9 +274,34 @@ async function sendTo(id,msg){
   try{const pl=JSON.stringify(await seal(await c.key,msg));targets.forEach(n=>{if(n.connected)n.publish(T,pl,{qos:1})})}catch(e){}
 }
 function broadcast(){H.players.forEach(p=>sendTo(p.id,stateFor(p)))}
+const WIN={
+  village:{e:"🏡",t:"Tous les loups-garous sont morts : le village a gagné."},
+  loups:{e:"🐺",t:"Les loups-garous sont aussi nombreux que les villageois : les loups-garous ont gagné."},
+  amoureux:{e:"💘",t:"Les amoureux sont les derniers survivants : ils ont gagné."}
+};
+function verdictKey(){
+  const al=H.players.filter(p=>p.alive&&p.role),w=al.filter(p=>p.role==="loup").length;
+  if(!H.players.some(p=>p.role))return null;
+  if(al.length===2&&al.every(p=>p.lover))return "amoureux";
+  if(w===0)return "village";
+  if(w>=al.length-w)return "loups";
+  return null;
+}
+const wins=(k,p)=>k==="amoureux"?!!p.lover:k==="loups"?p.role==="loup":p.role!=="loup";
+function checkResult(){
+  if(H.phase!=="game"){H.result=null;return}
+  const k=verdictKey();
+  if(!k){H.result=null;return}
+  if(H.players.some(p=>p.pending))return;
+  if(!H.result||H.result.w!==k)H.result={id:rid(),w:k};
+}
+function announce(){
+  H.players.filter(p=>p.pending).forEach(p=>{p.pending=false;H.deaths.push({id:rid(),pid:p.id,name:p.name,role:p.role,by:p.deathBy||""})});
+}
 function changed(){
   if(!H)return;
   if(!H.custom)H.comp=suggest(H.players.length);
+  checkResult();
   saveHost();renderHost();broadcast();
 }
 
@@ -311,14 +343,15 @@ function renderHost(){
     <button class="pri full" data-a="deal">Distribuer les rôles</button>
     <div class="err">${esc(hostErr)}</div>`;
   } else {
-    const al=H.players.filter(p=>p.alive&&p.role),w=al.filter(p=>p.role==="loup").length,v=al.length-w;
-    let verdict="";
-    if(al.length===2&&al.every(p=>p.lover))verdict="💘 Les amoureux sont les derniers survivants : ils ont gagné !";
-    else if(w===0)verdict="🎉 Plus aucun loup en vie : le village a gagné !";
-    else if(w>=v)verdict="🐺 Les loups sont aussi nombreux que les villageois : les loups ont gagné !";
+    const al=H.players.filter(p=>p.alive&&p.role),w=al.filter(p=>p.role==="loup").length;
+    const vk=verdictKey(),pend=H.players.filter(p=>p.pending);
     const late=H.players.filter(p=>!p.role);
-    if(verdict)h+=`<div class="note win">${verdict}</div>`;
+    if(vk)h+=`<div class="note win">${WIN[vk].e} ${WIN[vk].t}<br><span style="font-size:14px">${H.result?"✅ Le résultat a été envoyé à tous les joueurs.":"Annonce les morts pour envoyer le résultat aux joueurs."}</span></div>`;
     if(hostNote)h+=`<div class="note">${esc(hostNote)}</div>`;
+    if(pend.length)h+=`<div class="card" style="border-color:var(--acc)"><b>📢 Morts pas encore annoncées</b>
+      <ul class="list">${pend.map(p=>`<li><span class="grow">${esc(p.name)}</span><span>${ROLES[p.role].e} ${ROLES[p.role].n}</span></li>`).join("")}</ul>
+      <p class="mut" style="margin:4px 0 10px">Les joueurs ne sont pas encore prévenus. Annonce-les au réveil du village : chacun recevra le prénom et le rôle.</p>
+      <button class="pri full" data-a="announce">📢 Annoncer aux joueurs</button></div>`;
     if(late.length)h+=`<h2>Nouveaux arrivants</h2><div class="card"><ul class="list">${late.map(p=>`
       <li>${dot(p)}<span class="grow">${esc(p.name)}</span>
       <select class="sm" data-pending="${esc(p.id)}">${ORDER.map(k=>`<option value="${k}" ${(pending[p.id]||"villageois")===k?"selected":""}>${ROLES[k].e} ${ROLES[k].n}</option>`).join("")}</select>
@@ -326,7 +359,7 @@ function renderHost(){
       <button class="sm danger" data-a="kick" data-id="${esc(p.id)}" aria-label="Retirer">✕</button></li>`).join("")}</ul></div>`;
     h+=`<h2>Joueurs — ${al.length} en vie (${w} loup${w>1?"s":""})</h2><div class="card"><ul class="list">${H.players.filter(p=>p.role).map(p=>`
       <li class="${p.alive?"":"dead"}">${dot(p)}
-      <span class="grow"><b>${esc(p.name)}</b>${mtag(p)} · ${ROLES[p.role].e} ${ROLES[p.role].n}${p.revealed?" (révélé)":""}</span>${ibtn("p:"+p.id)}
+      <span class="grow"><b>${esc(p.name)}</b>${mtag(p)} · ${ROLES[p.role].e} ${ROLES[p.role].n}${p.revealed?" (révélé)":""}${p.pending?" · à annoncer":""}</span>${ibtn("p:"+p.id)}
       <button class="sm" data-a="peek" data-id="${esc(p.id)}" aria-label="Voir son écran">👁</button>
       <button class="sm" data-a="love" data-id="${esc(p.id)}" aria-label="Amoureux">${p.lover?"💘":"♡"}</button>
       <button class="sm" data-a="life" data-id="${esc(p.id)}">${p.alive?"☠️":"↩︎"}</button></li>${iline("p:"+p.id,ROLES[p.role].d+(isMayor(p)?" 🎖️ "+MAIRE.d:""))}`).join("")}</ul>
@@ -439,13 +472,13 @@ actions.deal=()=>{
   if(total(c)!==n){hostErr="La composition doit avoir exactement "+n+" rôles (actuellement "+total(c)+").";return renderHost()}
   if(!c.loup){hostErr="Il faut au moins un Loup-Garou.";return renderHost()}
   const deck=shuffle(ORDER.flatMap(k=>Array(c[k]).fill(k)));
-  H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false;p.revealed=false});
-  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;
+  H.players.forEach((p,i)=>{p.role=deck[i];p.alive=true;p.lover=false;p.revealed=false;p.pending=false});
+  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;H.deaths=[];H.result=null;
   H.phase="game";H.night=0;H.showQR=false;hostNote="";changed();
 };
 actions.give=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
-  p.role=pending[p.id]||"villageois";p.alive=true;p.lover=false;p.revealed=false;delete pending[p.id];changed();
+  p.role=pending[p.id]||"villageois";p.alive=true;p.lover=false;p.revealed=false;p.pending=false;delete pending[p.id];changed();
 };
 actions.love=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
@@ -454,20 +487,20 @@ actions.love=d=>{
 };
 function kill(p,byVote){
   const notes=[];
-  const one=x=>{
-    x.alive=false;
+  const one=(x,by)=>{
+    x.alive=false;x.pending=true;x.deathBy=by;
     if(x.id===H.mayor&&!H.succ){H.succ=true;notes.push("🎖️ "+x.name+" était Maire : il désigne son successeur.")}
     if(x.role==="chasseur")notes.push("🏹 "+x.name+" était Chasseur : il élimine immédiatement un joueur.");
     if(x.role==="ancien")notes.push(byVote?"🧓 Le village a éliminé l'Ancien : les villageois perdent leurs pouvoirs.":"🧓 Si c'est la première attaque des loups contre l'Ancien, il survit : appuie sur ↩︎.");
   };
-  one(p);
-  if(p.lover){const o=H.players.find(x=>x.lover&&x.id!==p.id&&x.alive);if(o){one(o);notes.splice(0,0,"💘 "+o.name+" meurt de chagrin.")}}
+  one(p,byVote?"vote":"");
+  if(p.lover){const o=H.players.find(x=>x.lover&&x.id!==p.id&&x.alive);if(o){one(o,"chagrin");notes.splice(0,0,"💘 "+o.name+" meurt de chagrin.")}}
   return notes.join(" ");
 }
 actions.life=d=>{
   const p=H.players.find(x=>x.id===d.id);if(!p)return;
   hostNote="";
-  if(p.alive)hostNote=kill(p,false);else{p.alive=true;if(H.succ&&H.mayor===p.id)H.succ=false}
+  if(p.alive)hostNote=kill(p,false);else{p.alive=true;p.pending=false;H.deaths=H.deaths.filter(x=>x.pid!==p.id);if(H.succ&&H.mayor===p.id)H.succ=false}
   changed();
 };
 actions.tset=d=>{H.timer=newTimer(+d.m*60000);changed()};
@@ -497,8 +530,10 @@ actions.vdone=()=>{H.vote=null;changed()};
 actions.vkill=d=>{
   const p=H.players.find(x=>x.name===d.name&&x.alive);if(!p)return;
   if(p.role==="idiot"&&!p.revealed){p.revealed=true;hostNote="🤪 "+p.name+" était l'Idiot du village : il reste en vie mais ne vote plus.";}
-  else hostNote="☠️ Le village a éliminé "+p.name+". "+kill(p,true);
+  else{hostNote="☠️ Le village a éliminé "+p.name+". "+kill(p,true);announce()}
   H.vote=null;changed();
+};
+actions.announce=()=>{announce();hostNote="📢 Les morts ont été annoncés à tous les joueurs.";changed()
 };
 function pSend(m){
   if(P){pSendRaw(m);return}
@@ -522,8 +557,8 @@ function beep(){try{const a=new (window.AudioContext||window.webkitAudioContext)
 actions.night=()=>{H.night++;hostNote="";changed();window.scrollTo({top:document.body.scrollHeight,behavior:"smooth"})};
 actions.again=()=>{
   if(!confirm("Relancer une partie avec les mêmes joueurs ?"))return;
-  H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false;p.revealed=false});
-  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;
+  H.players.forEach(p=>{p.role=null;p.alive=true;p.lover=false;p.revealed=false;p.pending=false});
+  H.vote=null;H.timer=newTimer(H.timer.dur);H.mayor=null;H.succ=false;H.deaths=[];H.result=null;
   H.phase="lobby";H.night=0;H.showQR=true;hostNote="";changed();
 };
 actions.end=()=>{
@@ -634,6 +669,8 @@ function playerBody(s){
   if(s.succ)day=`<div class="card" style="border-color:var(--acc)"><b>🎖️ Désigne ton successeur</b><p class="mut">Tu étais Maire : choisis qui reprend ton titre.</p>
     <div class="btns">${s.succ.map(n=>`<button data-a="succ" data-name="${esc(n)}">${esc(n)}</button>`).join("")}</div></div>`+day;
   if(s.mayor&&!s.isMayor)day=`<p class="mut" style="margin:0 0 4px">🎖️ Maire : <b>${esc(s.mayor)}</b></p>`+day;
+  if(s.deaths&&s.deaths.length)day+=`<details class="card"><summary><b>🪦 Morts (${s.deaths.length})</b></summary><ul class="list" style="margin-top:8px">${s.deaths.map(d=>`<li><span class="grow">${esc(d.name)}${d.me?" (toi)":""}</span><span>${ROLES[d.role].e} ${ROLES[d.role].n}</span></li>`).join("")}</ul></details>`;
+  if(s.result){const w=WIN[s.result.w];day=`<div class="note ${s.result.win?"win":""}" style="text-align:center;font-size:17px">${s.result.win?"🎉 <b>Vous avez gagné !</b>":"😞 <b>Vous avez perdu</b>"}<br><span style="font-size:14px">${w.e} ${w.t}</span></div>`+day}
   const rolesInfo=s.roles&&s.roles.length?`<details class="card"><summary><b>📖 Rôles de cette partie</b></summary><ul class="list" style="margin-top:8px">${[...s.roles.map(k=>ROLES[k]),MAIRE].map(x=>`<li style="display:block"><b>${x.e} ${x.n}</b><br><span class="mut">${x.d}</span></li>`).join("")}</ul></details>`:"";
   return `${s.alive?"":`<div class="note">☠️ Tu es mort. Garde le silence jusqu'à la fin de la partie !</div>`}
     ${s.revealed?`<div class="note">🤪 Ton rôle d'Idiot du village a été révélé : tu restes en vie mais tu ne votes plus.</div>`:""}
@@ -667,6 +704,34 @@ function renderPlayer(){
   ${body}
   <p style="margin-top:24px"><button class="sm" data-a="leave">${P.over?"← Accueil":"Quitter la partie"}</button></p>`;
   attachReveal();
+  if(s&&!P.over)showPopup(s);
+}
+function seenIds(){const x=load("lg-seen");return x&&x.code===P.code?x.ids:[]}
+function showPopup(s){
+  const seen=seenIds();
+  const evs=(s.deaths||[]).map(d=>({id:d.id,d}));
+  if(s.result)evs.push({id:s.result.id,r:s.result});
+  const cur=document.querySelector(".popup");
+  if(cur){if(evs.some(e=>e.id===cur.dataset.id))return;cur.remove()}
+  const ev=evs.find(e=>!seen.includes(e.id));if(!ev)return;
+  let html;
+  if(ev.d){const d=ev.d,r=ROLES[d.role];
+    html=`<div class="pbox lose"><div class="mut">${d.by==="vote"?"Le village a voté":"Annonce du meneur"}</div><div class="big">${r.e}</div>
+      <h2>${d.me?"Tu es mort":esc(d.name)+(d.by==="vote"?" a été éliminé":d.by==="chagrin"?" est mort de chagrin":" est mort")}</h2>
+      <p style="font-size:18px;margin:0">${d.me?"Tu étais":"C'était"} <b>${r.n}</b></p>
+      ${d.me?`<p class="mut">Garde le silence jusqu'à la fin de la partie.</p>`:""}`;
+  }else{const r=ev.r,w=WIN[r.w];
+    html=`<div class="pbox ${r.win?"win":"lose"}"><div class="mut">Fin de la partie</div><div class="big">${r.win?"🎉":"😞"}</div>
+      <h2>${r.win?"Vous avez gagné !":"Vous avez perdu"}</h2><p style="font-size:16px;margin:0">${w.e} ${w.t}</p>`;
+  }
+  const z=document.createElement("div");z.className="popup";z.dataset.id=ev.id;
+  z.innerHTML=html+`<button class="pri full" style="margin-top:18px">OK</button></div>`;
+  document.body.appendChild(z);
+  if(navigator.vibrate)try{navigator.vibrate(ev.r?[200,100,200,100,400]:[250])}catch(e){}
+  z.querySelector("button").addEventListener("click",()=>{
+    const ids=seenIds();ids.push(ev.id);store("lg-seen",{code:P.code,ids:ids.slice(-200)});
+    z.remove();if(P&&P.state)showPopup(P.state);
+  });
 }
 actions.leave=()=>{
   if(P&&!P.over&&!confirm("Quitter la partie ?"))return;
